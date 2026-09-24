@@ -117,3 +117,22 @@ test("claude project folder from a session's cwd", async () => {
   assert.equal(projectSlug("/Users/rodrigoalegria/orca/workspaces/AI.People21.AppRepo/murex"), "-Users-rodrigoalegria-orca-workspaces-AI-People21-AppRepo-murex");
   assert.equal(projectSlug("/Users/rodrigoalegria/Sewa"), "-Users-rodrigoalegria-Sewa");
 });
+
+test("row titles fall back and trim", async () => {
+  const { displayTitle } = await import("../src/lib/system");
+  assert.equal(displayTitle(undefined, "  first   prompt ", "Sewa"), "first prompt");
+  assert.equal(displayTitle(undefined, undefined, undefined), "Untitled session");
+  assert.equal(displayTitle("x".repeat(80)).length, 60);
+});
+
+test("a linked worktree reports its main repo's name", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { repoIdentity } = await import("../src/lib/system");
+  const root = join(mkdtempSync(join(tmpdir(), "headroom-")), "aiagent-how2-748-slug");
+  mkdirSync(root);
+  writeFileSync(join(root, ".git"), "gitdir: /Users/r/Sewa/AI.People21.AIAgent/.git/worktrees/aiagent-how2-748-slug\n");
+  assert.deepEqual(repoIdentity(root), { name: "AI.People21.AIAgent", worktree: "aiagent-how2-748-slug" });
+  assert.deepEqual(repoIdentity("/Users/r/orca/workspaces/AI.People21.AppRepo/murex"), { name: "AI.People21.AppRepo", worktree: "murex" });
+});

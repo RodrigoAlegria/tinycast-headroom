@@ -128,7 +128,8 @@ export interface Session {
   tool: Tool;
   key: string; // unique across tools
   sessionId: string;
-  name: string;
+  name: string; // the tool's own id-like name: "sewa-15", a thread name, an OpenCode title
+  title: string; // what the row shows: a generated or set title, else the topic, else the folder
   origin: string; // where it runs: "CLI · s005", "Codex Desktop", "OpenCode Desktop"
   cwd: string;
   state: SessionState;
@@ -143,6 +144,7 @@ export interface Session {
   rssKB?: number;
   topic?: string;
   lastPrompt?: string;
+  lastReply?: string;
   lastMessageAt?: number;
   repo?: Repo;
   otherRepos: Repo[];
@@ -153,8 +155,36 @@ export interface Session {
 
 export interface Repo {
   root: string;
+  name: string; // the main repo's name, also for a linked worktree
+  worktree?: string; // set when root is a linked worktree
   branch?: string;
   changes: number;
+}
+
+/** A linked worktree's .git is a file: "gitdir: /path/Main/.git/worktrees/<name>". */
+export function repoIdentity(root: string): { name: string; worktree?: string } {
+  const base = root.split("/").pop() || root;
+  try {
+    const dotGit = join(root, ".git");
+    if (statSync(dotGit).isFile()) {
+      const main = readFileSync(dotGit, "utf8").match(/gitdir:\s*(.+?)\/\.git\/worktrees\//)?.[1];
+      if (main) return { name: main.split("/").pop() || base, worktree: base };
+    }
+  } catch {
+    // unreadable: fall back to the folder name
+  }
+  const orca = root.match(/\/orca\/workspaces\/([^/]+)\/([^/]+)$/);
+  if (orca) return { name: orca[1], worktree: orca[2] };
+  return { name: base };
+}
+
+/** A row title from whatever the tool offers, trimmed for the narrow list column. */
+export function displayTitle(...candidates: Array<string | undefined>): string {
+  for (const c of candidates) {
+    const t = c?.replace(/\s+/g, " ").trim();
+    if (t) return t.length > 60 ? `${t.slice(0, 59)}…` : t;
+  }
+  return "Untitled session";
 }
 
 interface StatusFile {
@@ -252,12 +282,12 @@ export async function repoOf(dir: string): Promise<Repo | undefined> {
   if (!root) return undefined;
   const hit = statusCache.get(root);
   if (hit && Date.now() - hit.at < 30_000) return hit.repo;
-  let repo: Repo = { root, changes: 0 };
+  let repo: Repo = { root, ...repoIdentity(root), changes: 0 };
   try {
     const status = await run("/usr/bin/git", ["-C", root, "status", "--porcelain=v1", "--branch", "--untracked-files=normal"], 5000);
     const lines = status.split("\n").filter(Boolean);
     const head = lines[0]?.match(/^## (?:No commits yet on )?([^.\s]+)/)?.[1];
-    repo = { root, branch: head && head !== "HEAD" ? head : undefined, changes: lines.length - 1 };
+    repo = { root, ...repoIdentity(root), branch: head && head !== "HEAD" ? head : undefined, changes: lines.length - 1 };
   } catch {
     // not a readable repo after all: keep the root, skip branch and changes
   }
@@ -305,6 +335,7 @@ export async function scanClaude(procs: Proc[], idle: Map<string, number>, withR
       key: `claude-${f.pid}`,
       sessionId: f.sessionId,
       name: f.name ?? `pid ${f.pid}`,
+      title: displayTitle(t?.title, t?.topic, f.cwd.split("/").pop()),
       origin: proc.tty ? `${f.entrypoint === "cli" || !f.entrypoint ? "CLI" : f.entrypoint} · ${proc.tty}` : (f.entrypoint ?? "app"),
       cwd: f.cwd,
       state: isKept(f.cwd, keep) ? "kept" : busy ? "working" : "waiting",
@@ -318,6 +349,7 @@ export async function scanClaude(procs: Proc[], idle: Map<string, number>, withR
       rssKB: proc.rssKB,
       topic: t?.topic,
       lastPrompt: t?.lastPrompt,
+      lastReply: t?.lastReply,
       lastMessageAt: t?.lastMessageAt,
       ...located(f.cwd, repos, t?.gitBranch),
       resumeCommand: `cd ${JSON.stringify(f.cwd)} && claude --resume ${f.sessionId}`,

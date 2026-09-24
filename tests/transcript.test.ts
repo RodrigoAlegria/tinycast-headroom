@@ -74,3 +74,19 @@ test("edits older than the tail window are found by the backward scan", () => {
   writeFileSync(path, `${lines.join("\n")}\n`);
   assert.deepEqual(readTranscript(path)!.editedDirs, ["/Users/r/Sewa/.worktrees/aiagent-how2-748-slug/app"]);
 });
+
+test("Claude's generated title and last reply come from the tail", () => {
+  const tail = [
+    { type: "ai-title", aiTitle: "Client portal" },
+    user("resume the client portal work"),
+    assistant("2026-09-24T11:48:00.000Z", [{ type: "text", text: "**Done.** The plan is *updated*." }]),
+  ];
+  const s = summarize([] as never, tail as never, 10);
+  assert.equal(s.title, "Client portal");
+  assert.equal(s.lastReply, "Done. The plan is updated.");
+});
+
+test("a title the person set wins over an older generated one", () => {
+  const s = summarize([] as never, [{ type: "ai-title", aiTitle: "Old" }, { type: "custom-title", customTitle: "My name" }] as never, 10);
+  assert.equal(s.title, "My name");
+});

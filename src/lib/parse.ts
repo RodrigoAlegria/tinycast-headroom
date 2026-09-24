@@ -112,6 +112,7 @@ export interface AppGroup {
   rssKB: number;
   processes: number;
   quittable: boolean; // a real .app we can ask to quit
+  bundlePath?: string; // outermost .app, for its icon
 }
 
 /** Groups processes by their outermost .app bundle, so helpers count toward their app. */
@@ -120,16 +121,18 @@ export function groupApps(procs: Proc[]): AppGroup[] {
   for (const p of procs) {
     let name: string;
     let quittable = false;
-    const app = p.comm.match(/\/([^/]+)\.app(?:\/|$)/);
+    let bundlePath: string | undefined;
+    const app = p.comm.match(/^(.*?\/([^/]+)\.app)(?:\/|$)/);
     if (app) {
-      name = app[1];
+      name = app[2];
+      bundlePath = app[1];
       quittable = !p.comm.startsWith("/System/");
     } else if (/(^|\/)claude$/.test(p.comm)) {
       name = "Claude Code";
     } else {
       name = p.comm.split("/").pop() || p.comm;
     }
-    const g = groups.get(name) ?? { name, rssKB: 0, processes: 0, quittable };
+    const g = groups.get(name) ?? { name, rssKB: 0, processes: 0, quittable, bundlePath };
     g.rssKB += p.rssKB;
     g.processes += 1;
     g.quittable = g.quittable || quittable;

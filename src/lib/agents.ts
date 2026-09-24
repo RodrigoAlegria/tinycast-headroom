@@ -2,7 +2,7 @@ import { closeSync, openSync, readFileSync, statSync } from "fs";
 import { basename, isAbsolute, join } from "path";
 import { log, timed } from "./log";
 import type { Proc } from "./parse";
-import { HOME, located, reposFor, run, scanClaude, Session, Tool } from "./system";
+import { displayTitle, HOME, located, reposFor, run, scanClaude, Session, Tool } from "./system";
 import { linesOf, oneLine, readWindow, WINDOW_BYTES } from "./transcript";
 
 // ---------- Codex ----------
@@ -44,6 +44,7 @@ export interface CodexTail {
   statusSince?: number;
   lastMessageAt?: number;
   lastPrompt?: string;
+  lastReply?: string;
   editedFiles: string[];
 }
 
@@ -101,6 +102,13 @@ export function codexTail(entries: CodexEntry[]): CodexTail {
     if (!out.lastPrompt) {
       const t = codexPrompt(e);
       if (t) out.lastPrompt = oneLine(t, 110);
+    }
+    if (!out.lastReply && e.type === "response_item" && p?.type === "message" && p.role === "assistant" && Array.isArray(p.content)) {
+      const text = (p.content as Array<{ type?: string; text?: string }>)
+        .filter((c) => c?.type === "output_text" && c.text?.trim())
+        .map((c) => c.text!)
+        .join(" ");
+      if (text) out.lastReply = oneLine(text.replace(/[*_`#>]/g, ""), 240);
     }
     if (e.type === "response_item" && p?.type === "custom_tool_call" && p.name === "apply_patch" && typeof p.input === "string") {
       for (const m of p.input.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)) {
@@ -195,6 +203,7 @@ export async function scanCodex(procs: Proc[], idle: Map<string, number>, withRe
         key: `codex-${id}`,
         sessionId: id,
         name: codexThreadName(head.id) ?? `codex · ${basename(cwd)}`,
+        title: displayTitle(codexThreadName(head.id), head.topic, tail.lastPrompt, basename(cwd)),
         origin: desktop ? "Codex Desktop" : proc?.tty ? `CLI · ${proc.tty}` : (head.originator ?? "Codex"),
         cwd,
         state: tail.busy ? "working" : "waiting",
@@ -208,6 +217,7 @@ export async function scanCodex(procs: Proc[], idle: Map<string, number>, withRe
         rssKB: paths.length === 1 ? proc?.rssKB : undefined, // an app-server hosting several threads can't split its memory
         topic: head.topic ?? tail.lastPrompt,
         lastPrompt: tail.lastPrompt,
+        lastReply: tail.lastReply,
         lastMessageAt: tail.lastMessageAt,
         ...located(cwd, repos, head.gitBranch),
         resumeCommand: `cd ${JSON.stringify(cwd)} && codex resume ${id}`,
@@ -235,6 +245,7 @@ interface OpenCodeRow {
   last_role?: string;
   last_completed?: number | null;
   last_prompt?: string | null;
+  last_reply?: string | null;
 }
 
 export function openCodeQuery(since: number): string {
@@ -246,7 +257,11 @@ export function openCodeQuery(since: number): string {
        where p.message_id = (select u.id from message u where u.session_id = s.id and json_extract(u.data, '$.role') = 'user'
                              order by u.time_created desc limit 1)
          and json_extract(p.data, '$.type') = 'text' and ifnull(json_extract(p.data, '$.synthetic'), 0) = 0
-       order by p.id limit 1) as last_prompt
+       order by p.id limit 1) as last_prompt,
+    (select group_concat(json_extract(p.data, '$.text'), ' ') from part p
+       where p.message_id = (select a.id from message a where a.session_id = s.id and json_extract(a.data, '$.role') = 'assistant'
+                             order by a.time_created desc limit 1)
+         and json_extract(p.data, '$.type') = 'text') as last_reply
   from session s
   left join message m on m.id = (select id from message where session_id = s.id order by time_created desc limit 1)
   where s.parent_id is null and s.time_archived is null and s.time_updated > ${Math.floor(since)}
@@ -274,6 +289,7 @@ export async function scanOpenCode(procs: Proc[], withRepos = true): Promise<Ses
       key: `opencode-${r.id}`,
       sessionId: r.id,
       name: r.title || `opencode · ${basename(r.directory)}`,
+      title: displayTitle(r.title, r.last_prompt ?? undefined, basename(r.directory)),
       origin: desktop ? "OpenCode Desktop" : "OpenCode CLI",
       cwd: r.directory,
       state: busy ? "working" : "waiting",
@@ -284,6 +300,7 @@ export async function scanOpenCode(procs: Proc[], withRepos = true): Promise<Ses
       model: r.model,
       topic: r.title,
       lastPrompt: r.last_prompt ? oneLine(r.last_prompt, 110) : undefined,
+      lastReply: r.last_reply ? oneLine(r.last_reply.replace(/[*_`#>]/g, ""), 240) : undefined,
       lastMessageAt: r.time_updated,
       ...located(r.directory, repos),
       resumeCommand: `cd ${JSON.stringify(r.directory)} && opencode --session ${r.id}`,

@@ -6,11 +6,13 @@ import {
   confirmAlert,
   getPreferenceValues,
   Icon,
+  Image,
   List,
   open,
   showToast,
   Toast,
 } from "@raycast/api";
+import { existsSync } from "fs";
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanAgents } from "./lib/agents";
 import { ago, clock, duration, gb, kb, mbOrGb, pressureColor, pressureLabel, sparkline } from "./lib/format";
@@ -61,11 +63,28 @@ const sectionTitle: Record<SessionState, string> = {
   kept: "Kept (keep list)",
 };
 
-const toolInfo: Record<Tool, { label: string; color: Color; icon: Icon }> = {
-  claude: { label: "Claude", color: Color.Orange, icon: Icon.Stars },
-  codex: { label: "Codex", color: Color.Blue, icon: Icon.Code },
-  opencode: { label: "OpenCode", color: Color.Purple, icon: Icon.Terminal },
+const toolInfo: Record<Tool, { label: string; color: Color; app?: string; fallback: Image.ImageLike }> = {
+  claude: { label: "Claude", color: Color.Orange, app: "/Applications/Claude.app", fallback: { source: Icon.Stars, tintColor: Color.Orange } },
+  codex: { label: "Codex", color: Color.Blue, app: "/Applications/Codex.app", fallback: "codex.svg" },
+  opencode: { label: "OpenCode", color: Color.Purple, app: "/Applications/OpenCode.app", fallback: { source: Icon.Terminal, tintColor: Color.Purple } },
 };
+
+// The real app icon when the app is installed; checked once, since every existsSync crosses the bridge.
+const iconCache = new Map<Tool, Image.ImageLike>();
+function toolIcon(tool: Tool): Image.ImageLike {
+  let icon = iconCache.get(tool);
+  if (!icon) {
+    const info = toolInfo[tool];
+    icon = info.app && existsSync(info.app) ? { fileIcon: info.app } : info.fallback;
+    iconCache.set(tool, icon);
+  }
+  return icon;
+}
+
+function appIcon(app: AppGroup): Image.ImageLike {
+  if (app.name === "Claude Code") return toolIcon("claude");
+  return app.bundlePath ? { fileIcon: app.bundlePath } : Icon.AppWindow;
+}
 
 /** "8m", "3h", "16d": fits the narrow list column Tinycast leaves next to the detail panel. */
 function short(seconds: number | undefined): string {
@@ -74,6 +93,15 @@ function short(seconds: number | undefined): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
   return `${Math.floor(seconds / 86400)}d`;
+}
+
+/** "a moment", "8 min", "3 h", "1 day", "16 days" */
+function spoken(seconds: number): string {
+  if (seconds < 60) return "a moment";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h`;
+  const d = Math.floor(seconds / 86400);
+  return `${d} day${d === 1 ? "" : "s"}`;
 }
 
 const gb1 = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`);
@@ -331,15 +359,15 @@ export default function Command() {
           />
           <List.Item
             id="swap"
-            icon={Icon.HardDrive}
+            icon={{ source: Icon.MemoryChip, tintColor: pressureColor[memory.pressure] }}
             title={`Swap: ${gb1(memory.swapUsedMB)}${memory.swapTotalMB ? ` · ${Math.round((memory.swapUsedMB / memory.swapTotalMB) * 100)}%` : ""}`}
             detail={<MemoryDetail memory={memory} history={history} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
           <List.Item
             id="agents"
-            icon={Icon.Terminal}
-            title={sessions ? `Agents: ${sessions.length} · ${gb1(agentKB / 1024)}` : "Agents: loading…"}
+            icon={toolIcon("claude")}
+            title={sessions ? `${sessions.length} agent session${sessions.length === 1 ? "" : "s"} · ${gb1(agentKB / 1024)}` : "Agent sessions: loading…"}
             detail={<MemoryDetail memory={memory} history={history} agentsLine={counts} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
@@ -360,7 +388,7 @@ export default function Command() {
         <List.Section title="Idle Shells">
           <List.Item
             id="shells"
-            icon={Icon.Terminal}
+            icon={{ fileIcon: "/System/Applications/Utilities/Terminal.app" }}
             title={`${shells.length} idle shell${shells.length === 1 ? "" : "s"} · ${gb1(shells.reduce((s, v) => s + v.rssKB, 0) / 1024)}`}
             detail={
               <List.Item.Detail
@@ -384,7 +412,7 @@ export default function Command() {
             <List.Item
               key={a.name}
               id={`app-${a.name}`}
-              icon={Icon.AppWindow}
+              icon={appIcon(a)}
               title={a.name}
               accessories={[{ text: gb1(a.rssKB / 1024) }]}
               detail={<AppDetail app={a} memory={memory} reapKB={reapAllKB} />}
@@ -453,7 +481,6 @@ function SessionItem({
   commonActions: ReactNode;
   onChanged: () => void;
 }) {
-  const tag = stateTag[s.state];
   const tool = toolInfo[s.tool];
   const waitingFor = s.statusSince ? (Date.now() - s.statusSince) / 1000 : undefined;
   const accessory =
@@ -465,30 +492,37 @@ function SessionItem({
           ? { icon: { source: Icon.CircleFilled, tintColor: Color.Green }, tooltip: "Working" }
           : { icon: { source: Icon.Lock, tintColor: Color.Blue }, tooltip: "On the keep list" };
 
+  const minutes = (sec: number | undefined) => (sec === undefined ? "" : ` for ${spoken(sec)}`);
   const stateLine =
     s.state === "reapable"
-      ? `Idle ${duration(s.idleSeconds)}, past the threshold`
+      ? `**Idle**${minutes(s.idleSeconds)}, past the reap threshold`
       : s.state === "waiting"
-        ? `Waiting for you${s.statusSince ? ` since ${clock(s.statusSince)}` : ""}`
+        ? `**Waiting for you**${minutes(waitingFor)}`
         : s.state === "working"
-          ? "Working now"
-          : "Kept (keep list)";
+          ? "**Working** right now"
+          : "**Kept** · on the keep list";
   const code = (t: string) => `\`${t.replace(/`/g, "'")}\``;
+  const repo = s.repo;
+  const where = repo
+    ? [
+        `**${repo.name}**${repo.worktree ? ` · worktree ${code(repo.worktree)}` : ""}`,
+        [repo.branch ? code(repo.branch) : "", s.ticket ? `**${s.ticket}**` : "", repo.changes ? `${repo.changes} uncommitted` : "clean"].filter(Boolean).join(" · "),
+        ...s.otherRepos.map((r) => `Also touched **${r.name}**${r.branch ? ` on ${code(r.branch)}` : ""}`),
+      ]
+    : [`Not in a git repo · ran from ${code(tilde(s.cwd))}`];
   const lines = [
-    `## ${s.name}`,
-    `**${tool.label}** · ${stateLine} · ${s.origin}`,
-    s.topic ? `> ${s.topic}` : "",
-    `**Last message** ${clock(s.lastMessageAt)} (${ago(s.lastMessageAt)})`,
-    s.lastPrompt && s.lastPrompt !== s.topic ? `**Last prompt** ${s.lastPrompt}` : "",
-    "---",
-    s.workspace ? `**Workspace** ${s.workspace}` : "",
-    s.repo ? `**Repo** ${code(tilde(s.repo.root))}` : `**Repo** none, ran from ${code(tilde(s.cwd))}`,
-    s.repo?.branch ? `**Branch** ${code(s.repo.branch)}` : "",
-    s.ticket ? `**Ticket** ${s.ticket}` : "",
-    s.repo ? `**Uncommitted** ${s.repo.changes ? `${s.repo.changes} file${s.repo.changes === 1 ? "" : "s"}` : "none, clean"}` : "",
-    ...s.otherRepos.map((r) => `**Also touched** ${code(tilde(r.root))}${r.branch ? ` on ${code(r.branch)}` : ""}`),
-    "---",
+    `## ${s.title}`,
+    `${stateLine} · ${tool.label} in ${s.origin}`,
+    s.topic && s.topic !== s.title ? `> ${s.topic}` : "",
+    "#### Latest",
+    s.lastPrompt ? `**You:** ${s.lastPrompt}` : "",
+    s.lastReply ? `**${tool.label}:** ${s.lastReply}` : "",
+    `_${clock(s.lastMessageAt)} · ${ago(s.lastMessageAt)}_`,
+    "#### Where",
+    ...where,
+    "#### Session",
     [
+      code(s.name),
       s.pid !== undefined ? `PID ${s.pid}` : "",
       s.rssKB !== undefined ? kb(s.rssKB) : "",
       s.startedAt ? `started ${clock(s.startedAt)}` : "",
@@ -503,9 +537,9 @@ function SessionItem({
   return (
     <List.Item
       id={s.key}
-      icon={{ source: tool.icon, tintColor: tool.color }}
-      title={s.name}
-      keywords={[tool.label, s.topic, s.repo?.branch, s.ticket, s.cwd, s.workspace, s.origin].filter((x): x is string => !!x)}
+      icon={toolIcon(s.tool)}
+      title={s.title}
+      keywords={[tool.label, s.name, s.topic, s.repo?.name, s.repo?.branch, s.ticket, s.cwd, s.workspace, s.origin].filter((x): x is string => !!x)}
       accessories={[accessory]}
       detail={<List.Item.Detail markdown={markdown} />}
       actions={

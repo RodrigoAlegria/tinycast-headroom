@@ -6,7 +6,9 @@ import { dirname } from "path";
 export const WINDOW_BYTES = 64 * 1024;
 
 export interface TranscriptSummary {
+  title?: string; // Claude's own generated title (ai-title), or a title the person set
   topic?: string;
+  lastReply?: string;
   lastPrompt?: string;
   lastMessageAt?: number; // epoch ms
   gitBranch?: string;
@@ -16,6 +18,8 @@ export interface TranscriptSummary {
 
 type Entry = {
   type?: string;
+  aiTitle?: string;
+  customTitle?: string;
   isMeta?: boolean;
   timestamp?: string;
   gitBranch?: string;
@@ -82,6 +86,8 @@ export function summarize(head: Entry[], tail: Entry[], sizeBytes: number): Tran
       break;
     }
   }
+  let title: string | undefined;
+  let lastReply: string | undefined;
   let lastPrompt: string | undefined;
   let lastMessageAt: number | undefined;
   let gitBranch: string | undefined;
@@ -93,6 +99,14 @@ export function summarize(head: Entry[], tail: Entry[], sizeBytes: number): Tran
       if (!Number.isNaN(t)) lastMessageAt = t;
     }
     if (!gitBranch && e.gitBranch && e.gitBranch !== "HEAD") gitBranch = e.gitBranch;
+    if (!title && (e.type === "custom-title" || e.type === "ai-title")) title = (e.customTitle ?? e.aiTitle)?.trim() || undefined;
+    if (!lastReply && e.type === "assistant" && Array.isArray(e.message?.content)) {
+      const text = (e.message!.content as Array<{ type?: string; text?: string }>)
+        .filter((p) => p?.type === "text" && p.text?.trim())
+        .map((p) => p.text!)
+        .join(" ");
+      if (text) lastReply = oneLine(text.replace(/[*_`#>]/g, ""), 240);
+    }
     if (!lastPrompt) {
       const t = promptText(e);
       if (t) lastPrompt = oneLine(t, 110);
@@ -100,7 +114,10 @@ export function summarize(head: Entry[], tail: Entry[], sizeBytes: number): Tran
     for (const dir of editedDirsOf(e)) if (!editedDirs.includes(dir)) editedDirs.push(dir);
   }
   if (!topic) topic = command ?? lastPrompt;
-  return { topic, lastPrompt, lastMessageAt, gitBranch, editedDirs: editedDirs.slice(0, 5), sizeBytes };
+  if (!title) {
+    for (const e of head) if (e.type === "custom-title" || e.type === "ai-title") title = (e.customTitle ?? e.aiTitle)?.trim() || title;
+  }
+  return { title, topic, lastReply, lastPrompt, lastMessageAt, gitBranch, editedDirs: editedDirs.slice(0, 5), sizeBytes };
 }
 
 function editedDirsOf(e: Entry): string[] {
