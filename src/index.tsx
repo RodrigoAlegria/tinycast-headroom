@@ -61,11 +61,22 @@ const sectionTitle: Record<SessionState, string> = {
   kept: "Kept (keep list)",
 };
 
-const toolInfo: Record<Tool, { label: string; color: Color }> = {
-  claude: { label: "Claude", color: Color.Orange },
-  codex: { label: "Codex", color: Color.Blue },
-  opencode: { label: "OpenCode", color: Color.Purple },
+const toolInfo: Record<Tool, { label: string; color: Color; icon: Icon }> = {
+  claude: { label: "Claude", color: Color.Orange, icon: Icon.Stars },
+  codex: { label: "Codex", color: Color.Blue, icon: Icon.Code },
+  opencode: { label: "OpenCode", color: Color.Purple, icon: Icon.Terminal },
 };
+
+/** "8m", "3h", "16d": fits the narrow list column Tinycast leaves next to the detail panel. */
+function short(seconds: number | undefined): string {
+  if (seconds === undefined) return "";
+  if (seconds < 60) return "now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+const gb1 = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`);
 
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
@@ -314,27 +325,22 @@ export default function Command() {
           <List.Item
             id="pressure"
             icon={{ source: Icon.CircleFilled, tintColor: pressureColor[memory.pressure] }}
-            title="Memory pressure"
-            accessories={[{ text: { value: pressureLabel[memory.pressure], color: pressureColor[memory.pressure] } }]}
+            title={`Pressure: ${pressureLabel[memory.pressure]}`}
             detail={<MemoryDetail memory={memory} history={history} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
           <List.Item
             id="swap"
             icon={Icon.HardDrive}
-            title="Swap"
-            subtitle={memory.swapTotalMB ? `${Math.round((memory.swapUsedMB / memory.swapTotalMB) * 100)}% full` : "none"}
-            accessories={[{ text: gb(memory.swapUsedMB) }]}
+            title={`Swap: ${gb1(memory.swapUsedMB)}${memory.swapTotalMB ? ` · ${Math.round((memory.swapUsedMB / memory.swapTotalMB) * 100)}%` : ""}`}
             detail={<MemoryDetail memory={memory} history={history} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
           <List.Item
             id="agents"
             icon={Icon.Terminal}
-            title="Agent sessions"
-            subtitle={sessions ? counts || "none running" : "loading…"}
-            accessories={[{ text: sessions ? kb(agentKB) : "…" }]}
-            detail={<MemoryDetail memory={memory} history={history} />}
+            title={sessions ? `Agents: ${sessions.length} · ${gb1(agentKB / 1024)}` : "Agents: loading…"}
+            detail={<MemoryDetail memory={memory} history={history} agentsLine={counts} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
         </List.Section>
@@ -355,8 +361,7 @@ export default function Command() {
           <List.Item
             id="shells"
             icon={Icon.Terminal}
-            title={`${shells.length} idle shell${shells.length === 1 ? "" : "s"}`}
-            accessories={[{ text: kb(shells.reduce((s, v) => s + v.rssKB, 0)) }]}
+            title={`${shells.length} idle shell${shells.length === 1 ? "" : "s"} · ${gb1(shells.reduce((s, v) => s + v.rssKB, 0) / 1024)}`}
             detail={
               <List.Item.Detail
                 markdown={`**Idle login shells**\n\nTerminal tabs with nothing running, idle past ${idleSpec}.\n\n${shells
@@ -381,8 +386,7 @@ export default function Command() {
               id={`app-${a.name}`}
               icon={Icon.AppWindow}
               title={a.name}
-              subtitle={a.processes > 1 ? `${a.processes} processes` : undefined}
-              accessories={[{ text: kb(a.rssKB) }]}
+              accessories={[{ text: gb1(a.rssKB / 1024) }]}
               detail={<AppDetail app={a} memory={memory} reapKB={reapAllKB} />}
               actions={
                 <ActionPanel>
@@ -407,7 +411,7 @@ function mergeRepos(fresh: Session[], previous: Session[]): Session[] {
   });
 }
 
-function MemoryDetail({ memory, history }: { memory: Memory; history: Point[] }) {
+function MemoryDetail({ memory, history, agentsLine }: { memory: Memory; history: Point[]; agentsLine?: string }) {
   const chart = sparkline(history.slice(-60), memory.swapTotalMB);
   const markdown = [
     `## ${pressureLabel[memory.pressure]}`,
@@ -415,7 +419,10 @@ function MemoryDetail({ memory, history }: { memory: Memory; history: Point[] })
       ? "Plenty of headroom."
       : "macOS is compressing memory and swapping to disk. Switching apps will feel slow. kernel_task and WindowServer running hot is a symptom of this, not the cause.",
     chart ? `**Swap used, last hour**\n\n![Swap used](${chart})` : "_The swap chart fills in as samples come in, one a minute._",
-  ].join("\n\n");
+    agentsLine ? `**Agent sessions:** ${agentsLine}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   return (
     <List.Item.Detail
       markdown={markdown}
@@ -448,60 +455,59 @@ function SessionItem({
 }) {
   const tag = stateTag[s.state];
   const tool = toolInfo[s.tool];
-  const stateAccessory =
+  const waitingFor = s.statusSince ? (Date.now() - s.statusSince) / 1000 : undefined;
+  const accessory =
     s.state === "reapable"
-      ? { tag: { value: duration(s.idleSeconds), color: Color.Red } }
+      ? { text: { value: short(s.idleSeconds), color: Color.Red }, tooltip: "Idle past the threshold" }
       : s.state === "waiting"
-        ? { tag: { value: duration(s.statusSince ? (Date.now() - s.statusSince) / 1000 : undefined), color: Color.Orange } }
-        : { tag: { value: tag.text, color: tag.color } };
-  const subtitle = [s.ticket, s.topic].filter(Boolean).join(" · ");
-  const since = s.statusSince ? ` since ${clock(s.statusSince)}` : "";
+        ? { text: { value: short(waitingFor), color: Color.Orange }, tooltip: "Waiting for you" }
+        : s.state === "working"
+          ? { icon: { source: Icon.CircleFilled, tintColor: Color.Green }, tooltip: "Working" }
+          : { icon: { source: Icon.Lock, tintColor: Color.Blue }, tooltip: "On the keep list" };
+
+  const stateLine =
+    s.state === "reapable"
+      ? `Idle ${duration(s.idleSeconds)}, past the threshold`
+      : s.state === "waiting"
+        ? `Waiting for you${s.statusSince ? ` since ${clock(s.statusSince)}` : ""}`
+        : s.state === "working"
+          ? "Working now"
+          : "Kept (keep list)";
+  const code = (t: string) => `\`${t.replace(/`/g, "'")}\``;
+  const lines = [
+    `## ${s.name}`,
+    `**${tool.label}** · ${stateLine} · ${s.origin}`,
+    s.topic ? `> ${s.topic}` : "",
+    `**Last message** ${clock(s.lastMessageAt)} (${ago(s.lastMessageAt)})`,
+    s.lastPrompt && s.lastPrompt !== s.topic ? `**Last prompt** ${s.lastPrompt}` : "",
+    "---",
+    s.workspace ? `**Workspace** ${s.workspace}` : "",
+    s.repo ? `**Repo** ${code(tilde(s.repo.root))}` : `**Repo** none, ran from ${code(tilde(s.cwd))}`,
+    s.repo?.branch ? `**Branch** ${code(s.repo.branch)}` : "",
+    s.ticket ? `**Ticket** ${s.ticket}` : "",
+    s.repo ? `**Uncommitted** ${s.repo.changes ? `${s.repo.changes} file${s.repo.changes === 1 ? "" : "s"}` : "none, clean"}` : "",
+    ...s.otherRepos.map((r) => `**Also touched** ${code(tilde(r.root))}${r.branch ? ` on ${code(r.branch)}` : ""}`),
+    "---",
+    [
+      s.pid !== undefined ? `PID ${s.pid}` : "",
+      s.rssKB !== undefined ? kb(s.rssKB) : "",
+      s.startedAt ? `started ${clock(s.startedAt)}` : "",
+      s.model ?? "",
+      s.version ? `v${s.version}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  ];
+  const markdown = lines.filter(Boolean).join("\n\n");
 
   return (
     <List.Item
       id={s.key}
-      icon={{ source: Icon.Terminal, tintColor: tool.color }}
+      icon={{ source: tool.icon, tintColor: tool.color }}
       title={s.name}
-      subtitle={subtitle}
       keywords={[tool.label, s.topic, s.repo?.branch, s.ticket, s.cwd, s.workspace, s.origin].filter((x): x is string => !!x)}
-      accessories={[{ tag: { value: tool.label, color: tool.color } }, stateAccessory]}
-      detail={
-        <List.Item.Detail
-          markdown={`## ${s.name}\n\n${s.topic ? `_${s.topic}_` : "_No prompt yet_"}`}
-          metadata={
-            <List.Item.Detail.Metadata>
-              <List.Item.Detail.Metadata.TagList title="State">
-                <List.Item.Detail.Metadata.TagList.Item text={`${tag.text}${s.state === "reapable" ? ` · idle ${duration(s.idleSeconds)}` : since}`} color={tag.color} />
-              </List.Item.Detail.Metadata.TagList>
-              <List.Item.Detail.Metadata.TagList title="Tool">
-                <List.Item.Detail.Metadata.TagList.Item text={tool.label} color={tool.color} />
-              </List.Item.Detail.Metadata.TagList>
-              <List.Item.Detail.Metadata.Label title="Runs in" text={s.origin} />
-              <List.Item.Detail.Metadata.Label title="Last message" text={`${clock(s.lastMessageAt)} · ${ago(s.lastMessageAt)}`} />
-              {s.lastPrompt && <List.Item.Detail.Metadata.Label title="Last prompt" text={s.lastPrompt} />}
-              <List.Item.Detail.Metadata.Separator />
-              {s.workspace && <List.Item.Detail.Metadata.Label title="Workspace" text={s.workspace} />}
-              <List.Item.Detail.Metadata.Label title="Repo" text={s.repo ? tilde(s.repo.root) : `none · ran from ${tilde(s.cwd)}`} />
-              {s.repo?.branch && <List.Item.Detail.Metadata.Label title="Branch" text={s.repo.branch} />}
-              {s.ticket && (
-                <List.Item.Detail.Metadata.TagList title="Ticket">
-                  <List.Item.Detail.Metadata.TagList.Item text={s.ticket} color={Color.Blue} />
-                </List.Item.Detail.Metadata.TagList>
-              )}
-              {s.repo && <List.Item.Detail.Metadata.Label title="Uncommitted" text={s.repo.changes ? `${s.repo.changes} file${s.repo.changes === 1 ? "" : "s"}` : "none · clean"} />}
-              {s.otherRepos.map((r) => (
-                <List.Item.Detail.Metadata.Label key={r.root} title="Also touched" text={`${tilde(r.root)}${r.branch ? ` · ${r.branch}` : ""}`} />
-              ))}
-              <List.Item.Detail.Metadata.Separator />
-              {s.pid !== undefined && <List.Item.Detail.Metadata.Label title="Process" text={`PID ${s.pid}${s.tty ? ` · ${s.tty}` : ""}`} />}
-              <List.Item.Detail.Metadata.Label title="Started" text={clock(s.startedAt)} />
-              {s.rssKB !== undefined && <List.Item.Detail.Metadata.Label title="Memory" text={kb(s.rssKB)} />}
-              {s.model && <List.Item.Detail.Metadata.Label title="Model" text={s.model} />}
-              {s.version && <List.Item.Detail.Metadata.Label title="Version" text={s.version} />}
-            </List.Item.Detail.Metadata>
-          }
-        />
-      }
+      accessories={[accessory]}
+      detail={<List.Item.Detail markdown={markdown} />}
       actions={
         <ActionPanel>
           {s.resumeCommand && <Action.CopyToClipboard title="Copy Resume Command" content={s.resumeCommand} />}
