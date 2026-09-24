@@ -8,6 +8,12 @@ A Tinycast extension for a 16 GB Mac that keeps running out of memory. It shows 
 
 Session actions: Show Session (switches to its Orca tab, or its Terminal / iTerm2 tab, or the app), Open ticket in Linear, copy resume command / branch / ticket, keep this folder, reap. Reaping opens a dry-run page first, then shows what changed. ⌘⇧K edits the keep list.
 
+## Menu bar
+
+Not available yet: Tinycast 0.11.3 doesn't run menu bar commands ("Menu bar commands aren't supported yet").
+A menu bar command was written and removed in commit `3fff56c`; restore `src/menubar.tsx` and its manifest
+entry from the commit before it once Tinycast supports `mode: "menu-bar"`.
+
 ## Performance budget
 
 Headroom exists because the machine is short on memory, so it must not add to the problem.
