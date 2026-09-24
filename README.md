@@ -1,79 +1,202 @@
+<div align="center">
+
+<img src="assets/headroom.svg" width="88" alt="Headroom icon" />
+
 # Headroom
 
-A Tinycast extension for a 16 GB Mac that keeps running out of memory. It shows memory pressure and swap, every running agent session (Claude Code, Codex and OpenCode) (what it's about, its repo, branch and ticket, when you last talked to it), and the heaviest apps. Idle sessions can be reaped through [`claude-reap`](#claude-reap), always with a dry run and a confirm first.
+**See what's eating your Mac's memory, and which AI coding sessions you can close.**
 
-## Command
+A Tinycast extension for Macs that run many Claude Code, Codex and OpenCode sessions at once.
 
-**Headroom**: memory pressure (with when it started), a swap gauge and memory breakdown, swap history, agent sessions grouped as Reapable / Working / Waiting for you / Kept, idle shells, heavy apps with Quit.
+![Tinycast 0.11.3](https://img.shields.io/badge/Tinycast-0.11.3-0E7C86?style=flat-square)
+![macOS 26](https://img.shields.io/badge/macOS-26-16202A?style=flat-square&logo=apple)
+![Raycast format](https://img.shields.io/badge/Raycast-extension%20format-FF6363?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-30%20passing-2E9B5F?style=flat-square)
+![License MIT](https://img.shields.io/badge/license-MIT-7B8894?style=flat-square)
 
-Session actions: Show Session (switches to its Orca tab, or its Terminal / iTerm2 tab, or the app), Open ticket in Linear, copy resume command / branch / ticket, keep this folder, reap. Reaping opens a dry-run page first, then shows what changed. ⌘⇧K edits the keep list.
+<img src="docs/images/overview.png" width="860" alt="Headroom in Tinycast: memory pressure, a swap gauge, the memory breakdown and the swap history on the right; agent sessions grouped by state on the left" />
 
-## Menu bar
+<sub>Screenshot edited for privacy: one session title is blurred.</sub>
 
-Not available yet: Tinycast 0.11.3 doesn't run menu bar commands ("Menu bar commands aren't supported yet").
-A menu bar command was written and removed in commit `3fff56c`; restore `src/menubar.tsx` and its manifest
-entry from the commit before it once Tinycast supports `mode: "menu-bar"`.
+</div>
 
-## Performance budget
+---
 
-Headroom exists because the machine is short on memory, so it must not add to the problem.
+## Why
 
-- Target: under 10 MB added to Tinycast, under 0.5% CPU.
-- Nothing runs in the background. Everything below runs only while the Headroom window is open: memory every 5 s, sessions every 15 s, the reap dry run every 60 s.
-- Sessions load in two passes: first without git so rows appear at once, then repo, branch and changes.
-- Every file call crosses Tinycast's native bridge, so lookups are direct (transcript folder from the session's path, repo root by walking up for `.git`) rather than scans.
-- Transcripts can be 60 MB+. Only the first and last 64 KB are read, and the result is cached until the file size changes.
-- `ps` uses `comm=` (~70 KB) rather than full command lines (~180 KB).
-- No `nettop`, `system_profiler` or `ioreg`, and no binary command output: Tinycast's UTF-8 decoder throws on invalid bytes.
+A 16 GB Mac slows to a crawl long before "RAM used" looks alarming: macOS fills free memory with cache, then compresses, then swaps. Meanwhile agent sessions pile up in terminal tabs for days. Headroom puts both on one screen and answers two questions:
 
-## Where the data comes from
+1. **How much headroom is left?** Kernel memory pressure, swap, and what's compressed.
+2. **What can go?** Every Claude Code, Codex and OpenCode session: what it's about, where it works, when you last talked to it. Idle ones can be reaped safely.
 
-| Shows | Source |
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### Memory, honestly
+- **Pressure straight from the kernel** (`kern.memorystatus_vm_pressure_level`), not a threshold we invent
+- **"Warning since 11:02"**, and "seen since" when Headroom wasn't watching the moment it changed
+- **Swap gauge, memory bar** (wired · apps · compressed) and **swap history**, drawn as one SVG
+- **All clear** row when there's nothing to worry about
+
+</td>
+<td width="50%" valign="top">
+
+### Every agent session
+- **Claude Code, Codex and OpenCode** in one list, grouped as Reapable · Working · Waiting for you · Kept
+- **Real names**: Claude's own generated titles, Codex thread names, OpenCode titles
+- **Latest exchange**: your last prompt and the agent's last reply
+- **Where it works**: main repo (even from a worktree), branch, ticket, uncommitted changes
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Act without leaving
+- **Show Session** jumps to its Orca tab, Terminal or iTerm2 tab, or the app it runs in
+- **Open the ticket in Linear**, copy the resume command, branch or ticket
+- **Quit a heavy app** from a confirm page, with how much it frees
+- **Edit the keep list** in place (⌘⇧K)
+
+</td>
+<td width="50%" valign="top">
+
+### Reaping you can trust
+- **Dry run first**, with the count and size before anything happens
+- **Only the PIDs you confirmed** are touched, and re-checked just before
+- **Close one working session** on purpose, with its resume command offered first
+- **Before / after** swap, free and compressed once it's done
+
+</td>
+</tr>
+</table>
+
+<div align="center">
+<img src="docs/images/session.png" width="860" alt="An OpenCode session in Headroom: its title, how long it has waited, the last prompt and reply, and the repo and branch it works on" />
+</div>
+
+## How it finds sessions
+
+Each tool is found by its own evidence, so a session shows up however it was started: a terminal, Orca, or a desktop app.
+
+```mermaid
+flowchart LR
+  subgraph Claude Code
+    A1["~/.claude/sessions/&lt;pid&gt;.json<br/>name · busy/idle"] --> A2["transcript .jsonl<br/>first + last 64 KB"]
+  end
+  subgraph Codex
+    B1["lsof -c codex<br/>which rollout is open"] --> B2["rollout .jsonl<br/>meta + tail"]
+  end
+  subgraph OpenCode
+    C1["opencode.db<br/>query_only"]
+  end
+  A2 & B2 & C1 --> G["git: repo · worktree · branch · changes"]
+  G --> H["Headroom"]
+  R["claude-reap --json<br/>dry run"] --> H
+```
+
+| Tool | Live when | Details from |
+| --- | --- | --- |
+| Claude Code | its process is alive and has a status file | the transcript's two ends: `ai-title`, first prompt, last prompt and reply, edited files |
+| Codex | a `codex` process holds its rollout file open | the rollout's meta line and tail; thread names from `session_index.jsonl` |
+| OpenCode | OpenCode is running and the session changed in the last 24 h | one read-only SQL query per refresh |
+
+## Built for a Mac that's short on memory
+
+Headroom exists because the machine is already struggling, so it must not add to it.
+
+| | Budget | How |
+| --- | --- | --- |
+| Background cost | **zero** | nothing runs while the window is closed |
+| Memory refresh | 2 tiny commands every 5 s | one `sysctl`, one `vm_stat` |
+| Sessions refresh | every 15 s, in two passes | rows first, then git fills in repo and branch |
+| Transcripts | first + last 64 KB only | a 62 MB transcript costs the same as a small one; cached until it grows |
+| Git | once per repo, cached 30 s | repo roots found by walking up for `.git`, not by running git |
+| Measured scan | ~70 ms fast pass, ~100 ms full | 6 sessions across 3 tools, warm cache |
+
+It also stays clear of the things that break in Tinycast: no `nettop`, `system_profiler` or `ioreg`, no binary command output (Tinycast's UTF-8 decoder throws on invalid bytes), one image per detail panel, and no native alerts (they take focus and Tinycast hides its window).
+
+## Safe reaping with claude-reap
+
+Headroom never sends a signal itself. Reaping goes through `claude-reap`, a separate shell script, which keeps the safety rules in one place: it skips its own process chain, the current terminal and anything on the keep list, and decides idleness by **terminal idle time**, not process age.
+
+```sh
+claude-reap --json                                      # dry run
+claude-reap --json --apply --only 44887                 # reap only what you confirmed
+claude-reap --json --apply --only 14207 --ignore-idle   # close one chosen session
+```
+
+`--ignore-idle` is refused without `--only`, so it can never widen a scan.
+
+## Install
+
+Requires macOS and Tinycast 0.11.3.
+
+**From a release** (no Node needed):
+
+1. Download `tinycast-headroom.zip` from [Releases](https://github.com/RodrigoAlegria/tinycast-headroom/releases) and check it against `SHA256SUMS`.
+2. Extract the `tinycast-headroom` folder into `~/Library/Application Support/com.tinycast.app/extensions/` (Finder: **Go → Go to Folder**, or ⌘⇧G).
+3. Restart Tinycast and search **Headroom**.
+
+**From source**:
+
+```sh
+git clone https://github.com/RodrigoAlegria/tinycast-headroom.git
+cd tinycast-headroom
+npm ci && npm test && npm run build && npm run install-local
+```
+
+Restart Tinycast after the first install, then search **Headroom**, or open
+`tinycast://extensions/rodrigoalegria/tinycast-headroom/index`. To update, replace the folder and reopen the command.
+
+Reaping needs `claude-reap` at `~/bin/claude-reap` (the path is a preference). It isn't part of this repo; without it, Headroom still shows everything and just can't reap.
+
+### Preferences
+
+| Preference | Default | |
+| --- | --- | --- |
+| claude-reap path | `~/bin/claude-reap` | |
+| Idle threshold | 2 days | 12 h · 1 day · 2 days · 3 days · 7 days |
+| Linear workspace | `linkthings` | for `linear.app/<workspace>/issue/…` links |
+
+## Shortcuts
+
+| | |
 | --- | --- |
-| Pressure | `sysctl kern.memorystatus_vm_pressure_level` (1 normal, 2 warning, 4 critical) |
-| Swap | `sysctl vm.swapusage` |
-| Free / wired / compressed | `vm_stat` |
-| Processes, app memory | `ps -axo pid=,rss=,tty=,etime=,comm=` |
-| Terminal idle time | `w -h` |
-| Session name, working / waiting | `~/.claude/sessions/<pid>.json` |
-| Topic, last prompt, last message | `~/.claude/projects/*/<sessionId>.jsonl` (two 64 KB windows) |
-| Repo, branch, uncommitted | folders of files the session edited → `git rev-parse`, `git status --branch` |
-| Codex sessions | rollout files a `codex` process has open (`lsof -c codex`), so terminal, Orca and desktop sessions all show |
-| OpenCode sessions | `~/.local/share/opencode/opencode.db` with `PRAGMA query_only`, sessions touched in the last 24 h while OpenCode runs |
-| Reapable | `claude-reap --json` dry run (Claude sessions and idle shells only) |
+| **↵** | Show Session (Refresh on the Pressure row) |
+| **⌃X** | Reap or close the selected session |
+| **⌘L** | Open the ticket in Linear |
+| **⌘⇧C** | Copy the resume command |
+| **⌘⇧R** | Reap everything idle |
+| **⌘⇧K** | Edit the keep list |
+| **⌘⇧S** | Screenshot the screen (needs Screen Recording permission for Tinycast) |
+| **⌘⇧L** | Show the log file |
 
 ## Troubleshooting
 
-Headroom writes errors and slow operations to
-`~/Library/Application Support/com.tinycast.app/extension-support/tinycast-headroom/headroom.log`
-(⌘⇧L in the window opens it in Finder).
+Headroom logs errors and slow operations to
+`~/Library/Application Support/com.tinycast.app/extension-support/tinycast-headroom/headroom.log` (⌘⇧L).
 
-**Take Screenshot fails**: Tinycast needs Screen Recording permission. System Settings → Privacy & Security →
-Screen & System Audio Recording → turn on Tinycast (add it with + if it's missing), then quit and reopen Tinycast.
+- **Screenshot fails**: System Settings → Privacy & Security → Screen & System Audio Recording → turn on Tinycast, then quit and reopen it.
+- **No menu bar item**: Tinycast 0.11.3 doesn't run menu bar commands yet ("Menu bar commands aren't supported yet"). A menu bar command was written and removed in `3fff56c`; restore `src/menubar.tsx` from the commit before it once Tinycast supports `mode: "menu-bar"`.
 
-## claude-reap
+## Roadmap
 
-Reaping is delegated to `~/bin/claude-reap` (path configurable), which needs `--json` and `--only`:
+- [ ] Menu bar item, once Tinycast supports menu bar commands
+- [ ] Alerts when swap fills up (needs something running in the background)
+- [ ] Close Codex terminal sessions the way Claude ones are closed
 
-```sh
-claude-reap --json                       # dry run, machine-readable
-claude-reap --json --apply --only 44887  # reap only confirmed PIDs, re-checked first
-claude-reap --json --apply --only 14207 --ignore-idle  # close one chosen session that isn't idle
-```
-
-`--ignore-idle` is refused without `--only`, so it can never widen a scan. The keep list and
-claude-reap's own terminal stay protected either way.
-
-Headroom never sends signals itself. It always passes the exact PIDs you confirmed, and claude-reap re-checks each one is still idle before sending SIGHUP (then SIGKILL).
-
-## Build and install
+## Development
 
 ```sh
-npm ci
-npm test
+npm test          # 30 tests: parsers, transcripts, Codex/OpenCode, charts, pressure history
 npm run typecheck
-npm run build
-npm run install-local
+npm run build     # dist/index.js + manifest
 ```
 
-Restart Tinycast after the first install, then search for **Headroom**, or open `tinycast://extensions/rodrigoalegria/tinycast-headroom/index`.
+The code is small on purpose: pure parsers in `src/lib/parse.ts`, `transcript.ts`, `pressure.ts` and `charts.ts` are unit-tested; I/O lives in `system.ts`, `agents.ts` and `focus.ts`.
+
+<div align="center"><sub>MIT · Made for a 16 GB MacBook that deserved better.</sub></div>

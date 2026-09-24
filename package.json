@@ -74,7 +74,8 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "install-local": "node scripts/install-local.mjs"
+    "install-local": "node scripts/install-local.mjs",
+    "package": "node scripts/package.mjs"
   },
   "dependencies": {
     "@raycast/api": "^1.104.0",
