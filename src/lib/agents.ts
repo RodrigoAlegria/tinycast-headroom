@@ -257,7 +257,13 @@ export async function scanOpenCode(procs: Proc[], withRepos = true): Promise<Ses
   const running = procs.filter((p) => /OpenCode\.app\/|(^|\/)opencode$/.test(p.comm));
   if (!running.length) return [];
   const desktop = running.some((p) => p.comm.includes("OpenCode.app/"));
-  const out = await run("/usr/bin/sqlite3", ["-readonly", "-json", "-cmd", ".timeout 2000", OPENCODE_DB, openCodeQuery(Date.now() - OPENCODE_WINDOW_MS)], 5000);
+  // Not -readonly: a read-only connection can't open a WAL database while its -shm file is missing or
+  // being recreated (SQLITE_CANTOPEN). query_only still refuses every write.
+  const out = await run(
+    "/usr/bin/sqlite3",
+    ["-json", "-cmd", ".timeout 2000", "-cmd", "PRAGMA query_only=1", OPENCODE_DB, openCodeQuery(Date.now() - OPENCODE_WINDOW_MS)],
+    5000,
+  );
   const rows = (out.trim() ? JSON.parse(out) : []) as OpenCodeRow[];
   const sessions: Session[] = [];
   for (const r of rows) {

@@ -31,7 +31,7 @@ Headroom exists because the machine is short on memory, so it must not add to th
 | Topic, last prompt, last message | `~/.claude/projects/*/<sessionId>.jsonl` (two 64 KB windows) |
 | Repo, branch, uncommitted | folders of files the session edited → `git rev-parse`, `git status --branch` |
 | Codex sessions | rollout files a `codex` process has open (`lsof -c codex`), so terminal, Orca and desktop sessions all show |
-| OpenCode sessions | `~/.local/share/opencode/opencode.db`, read-only, sessions touched in the last 24 h while OpenCode runs |
+| OpenCode sessions | `~/.local/share/opencode/opencode.db` with `PRAGMA query_only`, sessions touched in the last 24 h while OpenCode runs |
 | Reapable | `claude-reap --json` dry run (Claude sessions and idle shells only) |
 
 ## Troubleshooting
