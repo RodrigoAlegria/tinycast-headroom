@@ -139,7 +139,7 @@ function scanBackForEdits(fd: number, size: number): string[] {
 
 const olderEdits = new Map<string, string[]>();
 
-function readWindow(fd: number, position: number, length: number): string {
+export function readWindow(fd: number, position: number, length: number): string {
   const buf = Buffer.alloc(length);
   const n = readSync(fd, buf, 0, length, position);
   return buf.subarray(0, n).toString("utf8");

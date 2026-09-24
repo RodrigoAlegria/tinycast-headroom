@@ -1,6 +1,6 @@
 # Headroom
 
-A Tinycast extension for a 16 GB Mac that keeps running out of memory. It shows memory pressure and swap, every running Claude Code session (what it's about, its repo, branch and ticket, when you last talked to it), and the heaviest apps. Idle sessions can be reaped through [`claude-reap`](#claude-reap), always with a dry run and a confirm first.
+A Tinycast extension for a 16 GB Mac that keeps running out of memory. It shows memory pressure and swap, every running agent session (Claude Code, Codex and OpenCode) (what it's about, its repo, branch and ticket, when you last talked to it), and the heaviest apps. Idle sessions can be reaped through [`claude-reap`](#claude-reap), always with a dry run and a confirm first.
 
 ## Commands
 
@@ -30,7 +30,18 @@ Headroom exists because the machine is short on memory, so it must not add to th
 | Session name, working / waiting | `~/.claude/sessions/<pid>.json` |
 | Topic, last prompt, last message | `~/.claude/projects/*/<sessionId>.jsonl` (two 64 KB windows) |
 | Repo, branch, uncommitted | folders of files the session edited → `git rev-parse`, `git status --branch` |
-| Reapable | `claude-reap --json` dry run |
+| Codex sessions | rollout files a `codex` process has open (`lsof -c codex`), so terminal, Orca and desktop sessions all show |
+| OpenCode sessions | `~/.local/share/opencode/opencode.db`, read-only, sessions touched in the last 24 h while OpenCode runs |
+| Reapable | `claude-reap --json` dry run (Claude sessions and idle shells only) |
+
+## Troubleshooting
+
+Headroom writes errors and slow operations to
+`~/Library/Application Support/com.tinycast.app/extension-support/tinycast-headroom/headroom.log`
+(⌘⇧L in the window opens it in Finder).
+
+**Take Screenshot fails**: Tinycast needs Screen Recording permission. System Settings → Privacy & Security →
+Screen & System Audio Recording → turn on Tinycast (add it with + if it's missing), then quit and reopen Tinycast.
 
 ## claude-reap
 

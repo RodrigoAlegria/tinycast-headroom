@@ -7,12 +7,15 @@ import {
   getPreferenceValues,
   Icon,
   List,
+  open,
   showToast,
   Toast,
 } from "@raycast/api";
-import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { scanAgents } from "./lib/agents";
 import { ago, clock, duration, gb, kb, mbOrGb, pressureColor, pressureLabel, sparkline } from "./lib/format";
 import { Point, recordSwap } from "./lib/history";
+import { LOG_FILE, log, timed } from "./lib/log";
 import type { AppGroup, Memory } from "./lib/parse";
 import {
   addToKeepList,
@@ -23,16 +26,21 @@ import {
   readProcs,
   reap,
   ReapResult,
-  scanSessions,
+  SCREEN_RECORDING_SETTINGS,
+  ScreenRecordingPermissionError,
   Session,
   SessionState,
+  takeScreenshot,
   tilde,
+  Tool,
 } from "./lib/system";
 
 interface Preferences {
   reapPath?: string;
   idleThreshold?: string;
 }
+
+const CMD = "index";
 
 // Refresh cadence. Memory is two tiny commands; sessions and apps share one `ps`; the reap dry run is the slowest.
 const MEMORY_MS = 5_000;
@@ -49,8 +57,14 @@ const stateTag: Record<SessionState, { text: string; color: Color }> = {
 const sectionTitle: Record<SessionState, string> = {
   reapable: "Reapable",
   working: "Working",
-  waiting: "Waiting for you",
+  waiting: "Waiting for You",
   kept: "Kept (keep list)",
+};
+
+const toolInfo: Record<Tool, { label: string; color: Color }> = {
+  claude: { label: "Claude", color: Color.Orange },
+  codex: { label: "Codex", color: Color.Blue },
+  opencode: { label: "OpenCode", color: Color.Purple },
 };
 
 function errorText(e: unknown) {
@@ -88,22 +102,36 @@ export default function Command() {
 
   const [memory, setMemory] = useState<Memory>();
   const [history, setHistory] = useState<Point[]>([]);
-  const [sessions, setSessions] = useState<Session[]>();
-  const [claudeKB, setClaudeKB] = useState(0);
+  const [scanned, setScanned] = useState<Session[]>();
+  const [scanErrors, setScanErrors] = useState<Partial<Record<Tool, string>>>({});
+  const [agentKB, setAgentKB] = useState(0);
   const [apps, setApps] = useState<AppGroup[]>([]);
   const [dryRun, setDryRun] = useState<ReapResult>();
-  const [error, setError] = useState<string>();
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [epoch, setEpoch] = useState(0); // bump to force every loop to refresh now
   const dryRunRef = useRef<ReapResult | undefined>(undefined);
+
+  const setError = useCallback((source: string, message?: string) => {
+    setErrors((current) => {
+      if (current[source] === message) return current;
+      const next = { ...current };
+      if (message) next[source] = message;
+      else delete next[source];
+      return next;
+    });
+  }, []);
+
+  useEffect(() => log(CMD, "opened"), []);
 
   usePoll(
     async () => {
       try {
-        const m = await readMemory();
+        const m = await timed(CMD, "memory", readMemory, 1000);
         setMemory(m);
         setHistory(await recordSwap(m.swapUsedMB));
+        setError("Memory");
       } catch (e) {
-        setError(`Memory: ${errorText(e)}`);
+        setError("Memory", errorText(e));
       }
     },
     MEMORY_MS,
@@ -113,35 +141,45 @@ export default function Command() {
   usePoll(
     async () => {
       try {
-        const r = await reap(reapPath, idleSpec, false);
+        const r = await timed(CMD, "claude-reap dry run", () => reap(reapPath, idleSpec, false), 3000);
         dryRunRef.current = r;
         setDryRun(r);
+        setError("claude-reap");
       } catch (e) {
-        setError(`claude-reap: ${errorText(e)}`);
+        setError("claude-reap", `${errorText(e)} (path: ${reapPath})`);
       }
     },
     REAP_MS,
     [epoch, reapPath, idleSpec],
   );
 
+  // Independent of the reap dry run: reapable state is applied at render time, so a dry run
+  // finishing never restarts (or skips) this loop.
   usePoll(
     async () => {
       try {
-        const [procs, idle] = await Promise.all([readProcs(), readIdle()]);
-        const reapable = new Set((dryRunRef.current?.victims ?? []).filter((v) => v.kind === "session").map((v) => v.pid));
-        const scan = await scanSessions(procs, idle, reapable);
-        setSessions(scan.sessions);
-        setClaudeKB(scan.totalKB);
+        const [procs, idle] = await timed(CMD, "ps + w", () => Promise.all([readProcs(), readIdle()]), 1000);
+        const scan = await scanAgents(CMD, procs, idle);
+        setScanned(scan.sessions);
+        setScanErrors(scan.errors);
+        setAgentKB(procs.filter((p) => /(^|\/)(claude|codex)$/.test(p.comm)).reduce((s, p) => s + p.rssKB, 0));
         setApps(heavyApps(procs));
+        setError("Sessions");
       } catch (e) {
-        setError(`Sessions: ${errorText(e)}`);
+        setError("Sessions", errorText(e));
+        setScanned((current) => current ?? []);
       }
     },
     SESSIONS_MS,
-    [epoch, dryRun],
+    [epoch],
   );
 
   const refresh = useCallback(() => setEpoch((n) => n + 1), []);
+
+  const sessions = useMemo(() => {
+    const reapable = new Set((dryRun?.victims ?? []).filter((v) => v.kind === "session").map((v) => v.pid));
+    return scanned?.map((s) => (s.tool === "claude" && s.pid && reapable.has(s.pid) ? { ...s, state: "reapable" as const } : s));
+  }, [scanned, dryRun]);
 
   const reapPids = useCallback(
     async (pids: number[]) => {
@@ -163,10 +201,12 @@ export default function Command() {
       const toast = await showToast({ style: Toast.Style.Animated, title: `Reaping ${victims.length}…` });
       try {
         const r = await reap(reapPath, idleSpec, true, victims.map((v) => v.pid));
+        log(CMD, `reaped ${r.victims.map((v) => v.pid).join(",")} freed ${r.reclaimKB} KB`);
         toast.style = Toast.Style.Success;
         toast.title = `Reaped ${r.victims.length} · freed ~${kb(r.reclaimKB)}`;
         toast.message = r.after ? `Swap ${gb(r.before.swapUsedMB)} → ${gb(r.after.swapUsedMB)}` : undefined;
       } catch (e) {
+        log(CMD, "reap failed", e);
         toast.style = Toast.Style.Failure;
         toast.title = "Reap failed";
         toast.message = errorText(e);
@@ -186,14 +226,37 @@ export default function Command() {
       if (!ok) return;
       try {
         await quitApp(app.name);
+        log(CMD, `asked ${app.name} to quit`);
         await showToast({ style: Toast.Style.Success, title: `Asked ${app.name} to quit` });
       } catch (e) {
+        log(CMD, `quit ${app.name} failed`, e);
         await showToast({ style: Toast.Style.Failure, title: `Could not quit ${app.name}`, message: errorText(e) });
       }
       refresh();
     },
     [refresh],
   );
+
+  const screenshot = useCallback(async () => {
+    try {
+      const path = await takeScreenshot(1);
+      log(CMD, `screenshot saved to ${path}`);
+      await showToast({ style: Toast.Style.Success, title: "Screenshot saved", message: tilde(path) });
+    } catch (e) {
+      log(CMD, "screenshot failed", e);
+      if (e instanceof ScreenRecordingPermissionError) {
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Tinycast can't record the screen",
+          message: "Allow it in Privacy & Security → Screen & System Audio Recording, then reopen Tinycast.",
+          primaryAction: { title: "Open Screen Recording Settings", onAction: () => open(SCREEN_RECORDING_SETTINGS) },
+        });
+        await open(SCREEN_RECORDING_SETTINGS);
+      } else {
+        await showToast({ style: Toast.Style.Failure, title: "Screenshot failed", message: errorText(e) });
+      }
+    }
+  }, []);
 
   const victims = dryRun?.victims ?? [];
   const reapAllKB = victims.reduce((s, v) => s + v.rssKB, 0);
@@ -211,66 +274,74 @@ export default function Command() {
         />
       )}
       <Action title="Refresh" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={refresh} />
+      <Action title="Take Screenshot" icon={Icon.Camera} shortcut={{ modifiers: ["cmd", "shift"], key: "s" }} onAction={screenshot} />
+      <Action.ShowInFinder title="Show Log File" path={LOG_FILE} shortcut={{ modifiers: ["cmd", "shift"], key: "l" }} />
     </>
   );
 
-  const memoryItems = memory && (
-    <List.Section title="Right Now">
-      <List.Item
-        id="pressure"
-        icon={{ source: Icon.CircleFilled, tintColor: pressureColor[memory.pressure] }}
-        title="Memory pressure"
-        accessories={[{ tag: { value: pressureLabel[memory.pressure], color: pressureColor[memory.pressure] } }]}
-        detail={<MemoryDetail memory={memory} history={history} />}
-        actions={<ActionPanel>{commonActions}</ActionPanel>}
-      />
-      <List.Item
-        id="swap"
-        icon={Icon.HardDrive}
-        title="Swap"
-        subtitle={memory.swapTotalMB ? `${Math.round((memory.swapUsedMB / memory.swapTotalMB) * 100)}% full` : "none"}
-        accessories={[{ text: gb(memory.swapUsedMB) }]}
-        detail={<MemoryDetail memory={memory} history={history} />}
-        actions={<ActionPanel>{commonActions}</ActionPanel>}
-      />
-      <List.Item
-        id="claude"
-        icon={Icon.Terminal}
-        title="Claude Code"
-        subtitle={`${sessions?.length ?? "…"} sessions`}
-        accessories={[{ text: kb(claudeKB) }]}
-        detail={<MemoryDetail memory={memory} history={history} />}
-        actions={<ActionPanel>{commonActions}</ActionPanel>}
-      />
-    </List.Section>
-  );
-
+  const allErrors = { ...errors, ...Object.fromEntries(Object.entries(scanErrors).map(([t, m]) => [toolInfo[t as Tool].label, m])) };
   const groups: SessionState[] = ["reapable", "working", "waiting", "kept"];
+  const counts = (["claude", "codex", "opencode"] as Tool[])
+    .map((t) => [t, (sessions ?? []).filter((s) => s.tool === t).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([t, n]) => `${n} ${toolInfo[t].label}`)
+    .join(" · ");
 
   return (
-    <List isShowingDetail isLoading={!memory || !sessions} searchBarPlaceholder="Filter by name, topic, repo, branch or ticket…">
-      {error && (
+    <List isShowingDetail isLoading={!memory || !sessions} searchBarPlaceholder="Filter by name, topic, tool, repo, branch or ticket…">
+      {Object.entries(allErrors).map(([source, message]) => (
         <List.Item
-          id="error"
+          key={`error-${source}`}
+          id={`error-${source}`}
           icon={{ source: Icon.ExclamationMark, tintColor: Color.Red }}
-          title="Something failed"
-          subtitle={error}
-          detail={<List.Item.Detail markdown={`**Something failed**\n\n\`${error}\``} />}
+          title={`${source} failed`}
+          subtitle={message}
+          detail={<List.Item.Detail markdown={`**${source} failed**\n\n\`\`\`\n${message}\n\`\`\`\n\nDetails are in the log file (⌘⇧L).`} />}
           actions={
             <ActionPanel>
-              <Action title="Retry" icon={Icon.ArrowClockwise} onAction={() => (setError(undefined), refresh())} />
+              <Action title="Retry" icon={Icon.ArrowClockwise} onAction={refresh} />
+              <Action.ShowInFinder title="Show Log File" path={LOG_FILE} />
             </ActionPanel>
           }
         />
+      ))}
+      {memory && (
+        <List.Section title="Right Now">
+          <List.Item
+            id="pressure"
+            icon={{ source: Icon.CircleFilled, tintColor: pressureColor[memory.pressure] }}
+            title="Memory pressure"
+            accessories={[{ tag: { value: pressureLabel[memory.pressure], color: pressureColor[memory.pressure] } }]}
+            detail={<MemoryDetail memory={memory} history={history} />}
+            actions={<ActionPanel>{commonActions}</ActionPanel>}
+          />
+          <List.Item
+            id="swap"
+            icon={Icon.HardDrive}
+            title="Swap"
+            subtitle={memory.swapTotalMB ? `${Math.round((memory.swapUsedMB / memory.swapTotalMB) * 100)}% full` : "none"}
+            accessories={[{ text: gb(memory.swapUsedMB) }]}
+            detail={<MemoryDetail memory={memory} history={history} />}
+            actions={<ActionPanel>{commonActions}</ActionPanel>}
+          />
+          <List.Item
+            id="agents"
+            icon={Icon.Terminal}
+            title="Agent sessions"
+            subtitle={sessions ? counts || "none running" : "loading…"}
+            accessories={[{ text: kb(agentKB) }]}
+            detail={<MemoryDetail memory={memory} history={history} />}
+            actions={<ActionPanel>{commonActions}</ActionPanel>}
+          />
+        </List.Section>
       )}
-      {memoryItems}
       {groups.map((g) => {
         const items = (sessions ?? []).filter((s) => s.state === g);
         if (!items.length) return null;
         return (
           <List.Section key={g} title={`${sectionTitle[g]} · ${items.length}`}>
             {items.map((s) => (
-              <SessionItem key={s.pid} session={s} onReap={() => reapPids([s.pid])} commonActions={commonActions} onChanged={refresh} />
+              <SessionItem key={s.key} session={s} onReap={() => s.pid && reapPids([s.pid])} commonActions={commonActions} onChanged={refresh} />
             ))}
           </List.Section>
         );
@@ -364,24 +435,24 @@ function SessionItem({
   onChanged: () => void;
 }) {
   const tag = stateTag[s.state];
-  const accessory =
+  const tool = toolInfo[s.tool];
+  const stateAccessory =
     s.state === "reapable"
       ? { tag: { value: duration(s.idleSeconds), color: Color.Red } }
       : s.state === "waiting"
         ? { tag: { value: duration(s.statusSince ? (Date.now() - s.statusSince) / 1000 : undefined), color: Color.Orange } }
         : { tag: { value: tag.text, color: tag.color } };
   const subtitle = [s.ticket, s.topic].filter(Boolean).join(" · ");
-  const resume = `cd ${JSON.stringify(s.cwd)} && claude --resume ${s.sessionId}`;
   const since = s.statusSince ? ` since ${clock(s.statusSince)}` : "";
 
   return (
     <List.Item
-      id={`session-${s.pid}`}
-      icon={{ source: Icon.Terminal, tintColor: tag.color }}
+      id={s.key}
+      icon={{ source: Icon.Terminal, tintColor: tool.color }}
       title={s.name}
       subtitle={subtitle}
-      keywords={[s.topic, s.repo?.branch, s.ticket, s.cwd, s.workspace].filter((x): x is string => !!x)}
-      accessories={[accessory]}
+      keywords={[tool.label, s.topic, s.repo?.branch, s.ticket, s.cwd, s.workspace, s.origin].filter((x): x is string => !!x)}
+      accessories={[{ tag: { value: tool.label, color: tool.color } }, stateAccessory]}
       detail={
         <List.Item.Detail
           markdown={`## ${s.name}\n\n${s.topic ? `_${s.topic}_` : "_No prompt yet_"}`}
@@ -390,6 +461,10 @@ function SessionItem({
               <List.Item.Detail.Metadata.TagList title="State">
                 <List.Item.Detail.Metadata.TagList.Item text={`${tag.text}${s.state === "reapable" ? ` · idle ${duration(s.idleSeconds)}` : since}`} color={tag.color} />
               </List.Item.Detail.Metadata.TagList>
+              <List.Item.Detail.Metadata.TagList title="Tool">
+                <List.Item.Detail.Metadata.TagList.Item text={tool.label} color={tool.color} />
+              </List.Item.Detail.Metadata.TagList>
+              <List.Item.Detail.Metadata.Label title="Runs in" text={s.origin} />
               <List.Item.Detail.Metadata.Label title="Last message" text={`${clock(s.lastMessageAt)} · ${ago(s.lastMessageAt)}`} />
               {s.lastPrompt && <List.Item.Detail.Metadata.Label title="Last prompt" text={s.lastPrompt} />}
               <List.Item.Detail.Metadata.Separator />
@@ -406,9 +481,10 @@ function SessionItem({
                 <List.Item.Detail.Metadata.Label key={r.root} title="Also touched" text={`${tilde(r.root)}${r.branch ? ` · ${r.branch}` : ""}`} />
               ))}
               <List.Item.Detail.Metadata.Separator />
-              <List.Item.Detail.Metadata.Label title="Terminal" text={`${s.tty || "none"} · PID ${s.pid}`} />
+              {s.pid !== undefined && <List.Item.Detail.Metadata.Label title="Process" text={`PID ${s.pid}${s.tty ? ` · ${s.tty}` : ""}`} />}
               <List.Item.Detail.Metadata.Label title="Started" text={clock(s.startedAt)} />
-              <List.Item.Detail.Metadata.Label title="Memory" text={kb(s.rssKB)} />
+              {s.rssKB !== undefined && <List.Item.Detail.Metadata.Label title="Memory" text={kb(s.rssKB)} />}
+              {s.model && <List.Item.Detail.Metadata.Label title="Model" text={s.model} />}
               {s.version && <List.Item.Detail.Metadata.Label title="Version" text={s.version} />}
             </List.Item.Detail.Metadata>
           }
@@ -416,11 +492,11 @@ function SessionItem({
       }
       actions={
         <ActionPanel>
-          <Action.CopyToClipboard title="Copy Resume Command" content={resume} />
+          {s.resumeCommand && <Action.CopyToClipboard title="Copy Resume Command" content={s.resumeCommand} />}
           {s.repo?.branch && <Action.CopyToClipboard title="Copy Branch Name" content={s.repo.branch} shortcut={{ modifiers: ["cmd"], key: "b" }} />}
           {s.ticket && <Action.CopyToClipboard title={`Copy ${s.ticket}`} content={s.ticket} shortcut={{ modifiers: ["cmd"], key: "t" }} />}
           <Action.ShowInFinder title="Show Folder in Finder" path={s.repo?.root ?? s.cwd} />
-          {s.state !== "kept" && (
+          {s.tool === "claude" && s.state !== "kept" && (
             <Action
               title="Keep This Folder"
               icon={Icon.Lock}

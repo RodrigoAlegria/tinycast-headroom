@@ -1,5 +1,5 @@
 import { execFile } from "child_process";
-import { appendFileSync, existsSync, readdirSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import {
@@ -16,6 +16,7 @@ import {
   Proc,
   ticketFromBranch,
 } from "./parse";
+import { SUPPORT_DIR } from "./log";
 import { readTranscript } from "./transcript";
 
 export const HOME = homedir();
@@ -23,9 +24,13 @@ const ENV = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME, LANG: "en_US.UTF-8" }
 
 export function run(cmd: string, args: string[], timeoutMs = 5000, maxBuffer = 1024 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { env: ENV, timeout: timeoutMs, maxBuffer, encoding: "utf8" }, (error, stdout) => {
-      if (error) reject(error);
-      else resolve(String(stdout));
+    execFile(cmd, args, { env: ENV, timeout: timeoutMs, maxBuffer, encoding: "utf8" }, (error, stdout, stderr) => {
+      if (error) {
+        // keep the output: some tools (lsof) exit non-zero with a usable result
+        Object.assign(error, { stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+        if (stderr && !error.message.includes(String(stderr).trim())) error.message = `${error.message.trim()}: ${String(stderr).trim()}`;
+        reject(error);
+      } else resolve(String(stdout));
     });
   });
 }
@@ -62,6 +67,42 @@ export async function quitApp(name: string): Promise<void> {
   await run("/usr/bin/osascript", ["-e", `quit app "${name.replace(/"/g, '\\"')}"`], 15000);
 }
 
+// ---------- screenshot (for reporting what the window looks like) ----------
+
+export const SCREENSHOT_DIR = SUPPORT_DIR;
+export const SCREEN_RECORDING_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+
+export class ScreenRecordingPermissionError extends Error {
+  constructor(detail: string) {
+    super(
+      "Tinycast is not allowed to record the screen. Open System Settings → Privacy & Security → Screen & System Audio Recording, " +
+        `turn on Tinycast (add it with + if it's missing), then quit and reopen Tinycast. (${detail})`,
+    );
+    this.name = "ScreenRecordingPermissionError";
+  }
+}
+
+/** Captures the screen after `delaySeconds`, so the action panel has closed. Returns the file path. */
+export async function takeScreenshot(delaySeconds = 1): Promise<string> {
+  mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  const path = join(SCREENSHOT_DIR, "headroom-latest.png");
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // an old file we can't remove is overwritten below anyway
+  }
+  try {
+    await run("/usr/sbin/screencapture", ["-x", "-T", String(delaySeconds), path], 15000);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    // Without the permission, screencapture exits non-zero with "could not create image from display".
+    if (/could not create image|not permitted|permission|declined/i.test(detail) || !existsSync(path)) throw new ScreenRecordingPermissionError(detail.trim());
+    throw e;
+  }
+  if (!existsSync(path) || statSync(path).size === 0) throw new ScreenRecordingPermissionError("screencapture wrote no image");
+  return path;
+}
+
 // ---------- keep list (shared with claude-reap) ----------
 
 const KEEP_FILE = join(HOME, ".config/claude-reap/keep");
@@ -81,20 +122,25 @@ export function addToKeepList(dir: string): void {
 // ---------- Claude Code sessions ----------
 
 export type SessionState = "reapable" | "working" | "waiting" | "kept";
+export type Tool = "claude" | "codex" | "opencode";
 
 export interface Session {
-  pid: number;
+  tool: Tool;
+  key: string; // unique across tools
   sessionId: string;
   name: string;
+  origin: string; // where it runs: "CLI · s005", "Codex Desktop", "OpenCode Desktop"
   cwd: string;
   state: SessionState;
   busy: boolean;
   statusSince?: number;
   startedAt?: number;
   version?: string;
-  tty: string;
+  model?: string;
+  pid?: number;
+  tty?: string;
   idleSeconds?: number;
-  rssKB: number;
+  rssKB?: number;
   topic?: string;
   lastPrompt?: string;
   lastMessageAt?: number;
@@ -102,7 +148,7 @@ export interface Session {
   otherRepos: Repo[];
   workspace?: string;
   ticket?: string;
-  transcriptPath?: string;
+  resumeCommand?: string;
 }
 
 export interface Repo {
@@ -117,6 +163,7 @@ interface StatusFile {
   cwd: string;
   name?: string;
   status?: string;
+  entrypoint?: string;
   statusUpdatedAt?: number;
   updatedAt?: number;
   startedAt?: number;
@@ -172,7 +219,7 @@ function findTranscript(sessionId: string): string | undefined {
 // git answers are cached for 30 s per folder; branch and change counts don't move faster than that.
 const gitCache = new Map<string, { at: number; repo?: Repo }>();
 
-async function repoOf(dir: string): Promise<Repo | undefined> {
+export async function repoOf(dir: string): Promise<Repo | undefined> {
   const hit = gitCache.get(dir);
   if (hit && Date.now() - hit.at < 30_000) return hit.repo;
   let repo: Repo | undefined;
@@ -189,67 +236,65 @@ async function repoOf(dir: string): Promise<Repo | undefined> {
   return repo;
 }
 
-export interface SessionScan {
-  sessions: Session[];
-  totalKB: number;
+/** Up to two distinct repos, trying edited folders first and the start folder last. Sequential, to keep git calls one at a time. */
+export async function reposFor(dirs: string[]): Promise<Repo[]> {
+  const repos: Repo[] = [];
+  for (const dir of dirs) {
+    const r = await repoOf(dir);
+    if (r && !repos.some((x) => x.root === r.root)) repos.push(r);
+    if (repos.length >= 2) break;
+  }
+  return repos;
 }
 
-export async function scanSessions(procs: Proc[], idle: Map<string, number>, reapable: Set<number>): Promise<SessionScan> {
+export function located(cwd: string, repos: Repo[], fallbackBranch?: string) {
+  const repo = repos[0];
+  return {
+    repo,
+    otherRepos: repos.slice(1),
+    workspace: describeWorkspace(repo?.root ?? cwd) ?? describeWorkspace(cwd),
+    ticket: ticketFromBranch(repo?.branch ?? fallbackBranch),
+  };
+}
+
+export function isKept(cwd: string, keep = readKeepList()): boolean {
+  return keep.some((g) => globMatch(g, cwd));
+}
+
+export async function scanClaude(procs: Proc[], idle: Map<string, number>): Promise<Session[]> {
   const byPid = new Map(procs.map((p) => [p.pid, p]));
   const keep = readKeepList();
-  const files = readStatusFiles(new Set(byPid.keys()));
-
-  const sessions = await Promise.all(
-    files.map(async (f): Promise<Session> => {
-      const proc = byPid.get(f.pid)!;
-      const idleSeconds = proc.tty ? idle.get(proc.tty) : undefined;
-      const transcriptPath = findTranscript(f.sessionId);
-      const t = transcriptPath ? readTranscript(transcriptPath) : undefined;
-
-      const repos: Repo[] = [];
-      for (const dir of [...(t?.editedDirs ?? []), f.cwd]) {
-        const r = await repoOf(dir);
-        if (r && !repos.some((x) => x.root === r.root)) repos.push(r);
-        if (repos.length >= 2) break;
-      }
-      const repo = repos[0];
-      const branch = repo?.branch ?? t?.gitBranch;
-      const kept = keep.some((g) => globMatch(g, f.cwd));
-      const busy = f.status === "busy";
-      let state: SessionState = busy ? "working" : "waiting";
-      // Only claude-reap's own dry run decides what is reapable, so we never offer a reap it would refuse.
-      if (reapable.has(f.pid)) state = "reapable";
-      else if (kept) state = "kept";
-
-      return {
-        pid: f.pid,
-        sessionId: f.sessionId,
-        name: f.name ?? `pid ${f.pid}`,
-        cwd: f.cwd,
-        state,
-        busy,
-        statusSince: f.statusUpdatedAt ?? f.updatedAt,
-        startedAt: f.startedAt ?? Date.now() - parseEtime(proc.etime) * 1000,
-        version: f.version,
-        tty: proc.tty,
-        idleSeconds,
-        rssKB: proc.rssKB,
-        topic: t?.topic,
-        lastPrompt: t?.lastPrompt,
-        lastMessageAt: t?.lastMessageAt,
-        repo,
-        otherRepos: repos.slice(1),
-        workspace: describeWorkspace(repo?.root ?? f.cwd) ?? describeWorkspace(f.cwd),
-        ticket: ticketFromBranch(branch),
-        transcriptPath,
-      };
-    }),
-  );
-
-  const order: Record<SessionState, number> = { reapable: 0, working: 1, waiting: 2, kept: 3 };
-  sessions.sort((a, b) => order[a.state] - order[b.state] || (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
-  const totalKB = procs.filter((p) => /(^|\/)claude$/.test(p.comm)).reduce((s, p) => s + p.rssKB, 0);
-  return { sessions, totalKB };
+  const sessions: Session[] = [];
+  for (const f of readStatusFiles(new Set(byPid.keys()))) {
+    const proc = byPid.get(f.pid)!;
+    const transcriptPath = findTranscript(f.sessionId);
+    const t = transcriptPath ? readTranscript(transcriptPath) : undefined;
+    const repos = await reposFor([...(t?.editedDirs ?? []), f.cwd]);
+    const busy = f.status === "busy";
+    sessions.push({
+      tool: "claude",
+      key: `claude-${f.pid}`,
+      sessionId: f.sessionId,
+      name: f.name ?? `pid ${f.pid}`,
+      origin: proc.tty ? `${f.entrypoint === "cli" || !f.entrypoint ? "CLI" : f.entrypoint} · ${proc.tty}` : (f.entrypoint ?? "app"),
+      cwd: f.cwd,
+      state: isKept(f.cwd, keep) ? "kept" : busy ? "working" : "waiting",
+      busy,
+      statusSince: f.statusUpdatedAt ?? f.updatedAt,
+      startedAt: f.startedAt ?? Date.now() - parseEtime(proc.etime) * 1000,
+      version: f.version,
+      pid: f.pid,
+      tty: proc.tty,
+      idleSeconds: proc.tty ? idle.get(proc.tty) : undefined,
+      rssKB: proc.rssKB,
+      topic: t?.topic,
+      lastPrompt: t?.lastPrompt,
+      lastMessageAt: t?.lastMessageAt,
+      ...located(f.cwd, repos, t?.gitBranch),
+      resumeCommand: `cd ${JSON.stringify(f.cwd)} && claude --resume ${f.sessionId}`,
+    });
+  }
+  return sessions;
 }
 
 // ---------- claude-reap ----------
