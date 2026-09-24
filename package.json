@@ -1,0 +1,89 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "tinycast-headroom",
+  "version": "0.1.0",
+  "title": "Headroom",
+  "description": "Memory pressure, swap and Claude Code sessions, with a safe reap for idle ones",
+  "icon": "assets/headroom.svg",
+  "author": "rodrigoalegria",
+  "license": "MIT",
+  "categories": [
+    "Developer Tools",
+    "System"
+  ],
+  "platforms": [
+    "macOS"
+  ],
+  "commands": [
+    {
+      "name": "index",
+      "title": "Headroom",
+      "description": "Memory pressure, Claude Code sessions and heavy apps",
+      "mode": "view"
+    },
+    {
+      "name": "menubar",
+      "title": "Headroom Menu Bar",
+      "description": "Swap and Claude session count in the menu bar",
+      "mode": "menu-bar",
+      "interval": "1m"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "reapPath",
+      "type": "textfield",
+      "title": "claude-reap Path",
+      "description": "Path to the claude-reap script",
+      "default": "~/bin/claude-reap",
+      "required": false
+    },
+    {
+      "name": "idleThreshold",
+      "type": "dropdown",
+      "title": "Idle Threshold",
+      "description": "A session idle longer than this can be reaped",
+      "default": "2d",
+      "required": false,
+      "data": [
+        {
+          "title": "12 hours",
+          "value": "12h"
+        },
+        {
+          "title": "1 day",
+          "value": "1d"
+        },
+        {
+          "title": "2 days",
+          "value": "2d"
+        },
+        {
+          "title": "3 days",
+          "value": "3d"
+        },
+        {
+          "title": "7 days",
+          "value": "7d"
+        }
+      ]
+    }
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "install-local": "node scripts/install-local.mjs"
+  },
+  "dependencies": {
+    "@raycast/api": "^1.104.0",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.10",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}
