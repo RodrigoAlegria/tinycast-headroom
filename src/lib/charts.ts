@@ -18,8 +18,14 @@ const uri = (svg: string) => `data:image/svg+xml;base64,${Buffer.from(svg).toStr
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 const gbText = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`);
 
-/** Swap gauge ring on the left, memory composition bar on the right. */
-export function memoryPanel(m: Memory, width = 460, height = 116): string {
+/**
+ * Swap gauge ring, memory composition bar and, when there are samples, the swap chart below,
+ * all in one image: Tinycast rendered only the first of two images in a detail panel.
+ */
+export function memoryPanel(m: Memory, history: Point[] = [], width = 460): string {
+  const chartH = 90;
+  const hasChart = history.length >= 2;
+  const height = hasChart ? 116 + 28 + chartH : 116;
   const pct = m.swapTotalMB > 0 ? Math.min(1, m.swapUsedMB / m.swapTotalMB) : 0;
   const r = 38;
   const c = 2 * Math.PI * r;
@@ -64,6 +70,7 @@ export function memoryPanel(m: Memory, width = 460, height = 116): string {
     segs +
     legend +
     `<text x="${barX}" y="104" font-family="${FONT}" font-size="11" fill="${TEXT}">Swap ${gbText(m.swapUsedMB)} of ${gbText(m.swapTotalMB)}</text>` +
+    (hasChart ? sparkBody(history, m.swapTotalMB, 0, 116 + 28, width, chartH) : "") +
     `</svg>`;
   return uri(svg);
 }
@@ -91,26 +98,35 @@ export function compareBars(rows: Array<{ label: string; mb: number; color: stri
   return uri(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${body}</svg>`);
 }
 
-/** Swap-used sparkline as an SVG data URI, for the detail panel's markdown. */
-export function sparkline(points: Point[], totalMB: number, width = 360, height = 90): string | undefined {
-  if (points.length < 2) return undefined;
+/** Swap-used line chart as SVG elements, drawn inside a box at (ox, oy). Empty when under 2 samples. */
+function sparkBody(points: Point[], totalMB: number, ox: number, oy: number, width: number, height: number): string {
+  if (points.length < 2) return "";
   const top = Math.max(totalMB, ...points.map((p) => p[1]), 1);
   const first = points[0][0];
   const span = Math.max(points[points.length - 1][0] - first, 1);
-  const x = (m: number) => ((m - first) / span) * (width - 8) + 4;
-  const y = (v: number) => height - 14 - (v / top) * (height - 26);
+  const x = (m: number) => ox + ((m - first) / span) * (width - 8) + 4;
+  const y = (v: number) => oy + height - 14 - (v / top) * (height - 26);
   const line = points.map(([m, v], i) => `${i ? "L" : "M"}${x(m).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
   const [lm, lv] = points[points.length - 1];
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
-    `<line x1="0" y1="${y(top)}" x2="${width}" y2="${y(top)}" stroke="#888" stroke-dasharray="3 4" stroke-opacity=".4"/>` +
-    `<line x1="0" y1="${y(0)}" x2="${width}" y2="${y(0)}" stroke="#888" stroke-opacity=".4"/>` +
-    `<path d="${line} L${x(lm).toFixed(1)} ${y(0)} L4 ${y(0)} Z" fill="#D48A10" fill-opacity=".18"/>` +
+  const hhmm = (m: number) => {
+    const d = new Date(m * 60000);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  return (
+    `<text x="${ox}" y="${oy - 6}" font-family="${FONT}" font-size="12" fill="${TEXT}">Swap used since ${hhmm(first)}</text>` +
+    `<line x1="${ox}" y1="${y(top)}" x2="${ox + width}" y2="${y(top)}" stroke="${TEXT}" stroke-dasharray="3 4" stroke-opacity=".5"/>` +
+    `<line x1="${ox}" y1="${y(0)}" x2="${ox + width}" y2="${y(0)}" stroke="${TEXT}" stroke-opacity=".5"/>` +
+    `<path d="${line} L${x(lm).toFixed(1)} ${y(0)} L${ox + 4} ${y(0)} Z" fill="#D48A10" fill-opacity=".18"/>` +
     `<path d="${line}" fill="none" stroke="#D48A10" stroke-width="2"/>` +
     `<circle cx="${x(lm).toFixed(1)}" cy="${y(lv).toFixed(1)}" r="3.5" fill="#D48A10"/>` +
-    `<text x="${width - 2}" y="${y(top) - 3}" text-anchor="end" font-family="Menlo,monospace" font-size="10" fill="#888">${gbText(top)}</text>` +
-    `<text x="2" y="${height - 2}" font-family="Menlo,monospace" font-size="10" fill="#888">${new Date(first * 60000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</text>` +
-    `<text x="${width - 2}" y="${height - 2}" text-anchor="end" font-family="Menlo,monospace" font-size="10" fill="#888">${gbText(lv)} now</text>` +
-    `</svg>`;
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+    `<text x="${ox + width - 2}" y="${y(top) - 3}" text-anchor="end" font-family="${MONO}" font-size="10" fill="${TEXT}">${gbText(top)}</text>` +
+    `<text x="${ox + 2}" y="${oy + height - 2}" font-family="${MONO}" font-size="10" fill="${TEXT}">${hhmm(first)}</text>` +
+    `<text x="${ox + width - 2}" y="${oy + height - 2}" text-anchor="end" font-family="${MONO}" font-size="10" fill="${TEXT}">${gbText(lv)} now</text>`
+  );
+}
+
+/** Standalone swap chart (kept for callers that want only the line). */
+export function sparkline(points: Point[], totalMB: number, width = 360, height = 90): string | undefined {
+  if (points.length < 2) return undefined;
+  return uri(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height + 16}" viewBox="0 0 ${width} ${height + 16}">${sparkBody(points, totalMB, 0, 16, width, height)}</svg>`);
 }

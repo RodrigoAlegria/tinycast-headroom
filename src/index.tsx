@@ -16,7 +16,7 @@ import {
 import { existsSync } from "fs";
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanAgents } from "./lib/agents";
-import { compareBars, memoryPanel, sparkline } from "./lib/charts";
+import { compareBars, memoryPanel } from "./lib/charts";
 import { latestClaudeVersion, linearUrl, showSession, versionLag } from "./lib/focus";
 import { KeepListForm } from "./keep-list-form";
 import { ReapView } from "./reap-view";
@@ -94,7 +94,7 @@ function appIcon(app: AppGroup): Image.ImageLike {
 
 // Tinycast shrinks a row's accessory before its title, so titles are cut early to keep the
 // accessory (wait time, state icon) readable in the narrow list column.
-const LIST_TITLE_MAX = 22;
+const LIST_TITLE_MAX = 16;
 const listTitle = (t: string) => (t.length > LIST_TITLE_MAX ? `${t.slice(0, LIST_TITLE_MAX - 1).trimEnd()}…` : t);
 
 /** "8m", "3h", "16d": fits the narrow list column Tinycast leaves next to the detail panel. */
@@ -462,14 +462,14 @@ function sinceLine(p: PressureState | undefined, level: string): string {
 }
 
 function MemoryDetail({ memory, history, pressure, agentsLine }: { memory: Memory; history: Point[]; pressure?: PressureState; agentsLine?: string }) {
-  const chart = sparkline(history.slice(-60), memory.swapTotalMB);
+  const points = history.slice(-60);
   const markdown = [
     `## ${pressureLabel[memory.pressure]}${sinceLine(pressure, memory.pressure)}`,
     memory.pressure === "normal"
       ? "Plenty of headroom."
       : "macOS is compressing memory and swapping to disk. Switching apps will feel slow. kernel_task and WindowServer running hot is a symptom of this, not the cause.",
-    `![Swap and memory](${memoryPanel(memory)})`,
-    chart ? `**Swap used, last hour**\n\n![Swap used](${chart})` : "_The swap chart fills in as samples come in, one a minute while Headroom is open._",
+    `![Swap and memory](${memoryPanel(memory, points)})`,
+    points.length < 2 ? "_The swap chart fills in as samples come in, one a minute while Headroom is open._" : "",
     agentsLine ? `**Agent sessions:** ${agentsLine}` : "",
   ]
     .filter(Boolean)
@@ -490,12 +490,10 @@ function AllClearDetail({
   sessions: number;
   idleSpec: string;
 }) {
-  const chart = sparkline(history.slice(-60), memory.swapTotalMB);
   const markdown = [
     `## Plenty of headroom`,
     `Pressure is normal${sinceLine(pressure, memory.pressure)}, swap is under half full and nothing is idle past ${idleSpec}. ${sessions} agent session${sessions === 1 ? "" : "s"} running.`,
-    `![Swap and memory](${memoryPanel(memory)})`,
-    chart ? `![Swap used](${chart})` : "",
+    `![Swap and memory](${memoryPanel(memory, history.slice(-60))})`,
   ]
     .filter(Boolean)
     .join("\n\n");
