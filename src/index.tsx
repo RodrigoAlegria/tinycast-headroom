@@ -575,18 +575,7 @@ function SessionItem({
       .filter(Boolean)
       .join(" · "),
   ];
-  // Tinycast's footer shows only the main action, so the useful shortcuts are spelled out here.
-  const canClose = s.tool === "claude" && (s.state === "working" || s.state === "waiting") && !!s.tty;
-  const keys = [
-    s.pid !== undefined || s.origin === "OpenCode Desktop" ? "**↵** show" : "",
-    s.state === "reapable" ? "**⌃X** reap" : canClose ? "**⌃X** close" : "",
-    s.ticket ? "**⌘L** open in Linear" : "",
-    s.resumeCommand ? "**⌘⇧C** copy resume command" : "",
-    "**⌘K** all actions",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const markdown = [...lines, "---", keys].filter(Boolean).join("\n\n");
+  const markdown = lines.filter(Boolean).join("\n\n");
 
   return (
     <List.Item
