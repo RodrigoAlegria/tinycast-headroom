@@ -111,3 +111,9 @@ test("threshold spec", () => {
   assert.equal(thresholdSeconds("12h"), 43200);
   assert.equal(thresholdSeconds("2d"), 172800);
 });
+
+test("claude project folder from a session's cwd", async () => {
+  const { projectSlug } = await import("../src/lib/system");
+  assert.equal(projectSlug("/Users/rodrigoalegria/orca/workspaces/AI.People21.AppRepo/murex"), "-Users-rodrigoalegria-orca-workspaces-AI-People21-AppRepo-murex");
+  assert.equal(projectSlug("/Users/rodrigoalegria/Sewa"), "-Users-rodrigoalegria-Sewa");
+});

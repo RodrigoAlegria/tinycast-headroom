@@ -2,7 +2,7 @@ import { closeSync, openSync, readFileSync, statSync } from "fs";
 import { basename, isAbsolute, join } from "path";
 import { log, timed } from "./log";
 import type { Proc } from "./parse";
-import { HOME, located, readStatusFiles, reposFor, run, scanClaude, Session, Tool } from "./system";
+import { HOME, located, reposFor, run, scanClaude, Session, Tool } from "./system";
 import { linesOf, oneLine, readWindow, WINDOW_BYTES } from "./transcript";
 
 // ---------- Codex ----------
@@ -167,7 +167,7 @@ function codexThreadName(id: string | undefined): string | undefined {
   }
 }
 
-export async function scanCodex(procs: Proc[], idle: Map<string, number>): Promise<Session[]> {
+export async function scanCodex(procs: Proc[], idle: Map<string, number>, withRepos = true): Promise<Session[]> {
   const codexPids = procs.filter((p) => /(^|\/)codex$/.test(p.comm));
   if (!codexPids.length) return [];
   let lsof = "";
@@ -187,7 +187,7 @@ export async function scanCodex(procs: Proc[], idle: Map<string, number>): Promi
       const { head, tail } = r;
       const cwd = head.cwd ?? HOME;
       const edited = tail.editedFiles.map((f) => (isAbsolute(f) ? f : join(cwd, f))).map((f) => f.slice(0, f.lastIndexOf("/")));
-      const repos = await reposFor([...new Set(edited)].slice(0, 5).concat(cwd));
+      const repos = withRepos ? await reposFor([...new Set(edited)].slice(0, 5).concat(cwd)) : [];
       const desktop = head.originator && /desktop/i.test(head.originator);
       const id = head.id ?? basename(path, ".jsonl");
       sessions.push({
@@ -253,7 +253,7 @@ export function openCodeQuery(since: number): string {
   order by s.time_updated desc limit 15`;
 }
 
-export async function scanOpenCode(procs: Proc[]): Promise<Session[]> {
+export async function scanOpenCode(procs: Proc[], withRepos = true): Promise<Session[]> {
   const running = procs.filter((p) => /OpenCode\.app\/|(^|\/)opencode$/.test(p.comm));
   if (!running.length) return [];
   const desktop = running.some((p) => p.comm.includes("OpenCode.app/"));
@@ -262,7 +262,7 @@ export async function scanOpenCode(procs: Proc[]): Promise<Session[]> {
   const sessions: Session[] = [];
   for (const r of rows) {
     const busy = r.last_role === "user" || (r.last_role === "assistant" && !r.last_completed);
-    const repos = await reposFor([r.directory]);
+    const repos = withRepos ? await reposFor([r.directory]) : [];
     sessions.push({
       tool: "opencode",
       key: `opencode-${r.id}`,
@@ -294,17 +294,18 @@ export interface AgentScan {
 }
 
 /** Each tool is scanned on its own, so one failing source never hides the others. */
-export async function scanAgents(command: string, procs: Proc[], idle: Map<string, number>): Promise<AgentScan> {
+/** `withRepos: false` is the fast first pass (no git); the second pass fills in repo, branch and changes. */
+export async function scanAgents(command: string, procs: Proc[], idle: Map<string, number>, withRepos = true): Promise<AgentScan> {
   const errors: AgentScan["errors"] = {};
   const sessions: Session[] = [];
   const sources: Array<[Tool, () => Promise<Session[]>]> = [
-    ["claude", () => scanClaude(procs, idle)],
-    ["codex", () => scanCodex(procs, idle)],
-    ["opencode", () => scanOpenCode(procs)],
+    ["claude", () => scanClaude(procs, idle, withRepos)],
+    ["codex", () => scanCodex(procs, idle, withRepos)],
+    ["opencode", () => scanOpenCode(procs, withRepos)],
   ];
   for (const [tool, scan] of sources) {
     try {
-      sessions.push(...(await timed(command, `scan ${tool}`, scan, 1000)));
+      sessions.push(...(await timed(command, `scan ${tool}${withRepos ? "" : " (fast pass)"}`, scan, 1000)));
     } catch (e) {
       errors[tool] = e instanceof Error ? e.message : String(e);
     }
@@ -315,24 +316,3 @@ export async function scanAgents(command: string, procs: Proc[], idle: Map<strin
   return { sessions, errors };
 }
 
-/** Cheap counts for the menu bar: no git and no transcript reads. */
-export async function countAgents(procs: Proc[]): Promise<Record<Tool, number>> {
-  const alive = new Set(procs.map((p) => p.pid));
-  const counts: Record<Tool, number> = { claude: 0, codex: 0, opencode: 0 };
-  counts.claude = readStatusFiles(alive).length;
-  if (procs.some((p) => /(^|\/)codex$/.test(p.comm))) {
-    let lsof = "";
-    try {
-      lsof = await run("/usr/sbin/lsof", ["-c", "codex", "-a", "-d", "0-9999", "-Fpn"], 5000);
-    } catch (e) {
-      lsof = (e as { stdout?: string }).stdout ?? "";
-    }
-    for (const paths of parseLsofRollouts(lsof).values()) counts.codex += paths.length;
-  }
-  if (procs.some((p) => /OpenCode\.app\/|(^|\/)opencode$/.test(p.comm))) {
-    const since = Math.floor(Date.now() - OPENCODE_WINDOW_MS);
-    const out = await run("/usr/bin/sqlite3", ["-readonly", "-cmd", ".timeout 2000", OPENCODE_DB, `select count(*) from session where parent_id is null and time_archived is null and time_updated > ${since}`], 5000);
-    counts.opencode = parseInt(out.trim(), 10) || 0;
-  }
-  return counts;
-}

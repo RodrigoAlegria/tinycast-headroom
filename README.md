@@ -2,18 +2,18 @@
 
 A Tinycast extension for a 16 GB Mac that keeps running out of memory. It shows memory pressure and swap, every running agent session (Claude Code, Codex and OpenCode) (what it's about, its repo, branch and ticket, when you last talked to it), and the heaviest apps. Idle sessions can be reaped through [`claude-reap`](#claude-reap), always with a dry run and a confirm first.
 
-## Commands
+## Command
 
-- **Headroom**: memory pressure, swap history, Claude sessions grouped as Reapable / Working / Waiting for you / Kept, idle shells, heavy apps with Quit.
-- **Headroom Menu Bar**: swap and session count in the menu bar, refreshed once a minute.
+**Headroom**: memory pressure, swap history, agent sessions grouped as Reapable / Working / Waiting for you / Kept, idle shells, heavy apps with Quit.
 
 ## Performance budget
 
 Headroom exists because the machine is short on memory, so it must not add to the problem.
 
 - Target: under 10 MB added to Tinycast, under 0.5% CPU.
-- The menu bar command runs one `sysctl`, one `vm_stat`, one `ps` and a directory listing per minute.
-- Sessions, git and the reap dry run only run while the Headroom window is open (every 15 s, 15 s and 60 s).
+- Nothing runs in the background. Everything below runs only while the Headroom window is open: memory every 5 s, sessions every 15 s, the reap dry run every 60 s.
+- Sessions load in two passes: first without git so rows appear at once, then repo, branch and changes.
+- Every file call crosses Tinycast's native bridge, so lookups are direct (transcript folder from the session's path, repo root by walking up for `.git`) rather than scans.
 - Transcripts can be 60 MB+. Only the first and last 64 KB are read, and the result is cached until the file size changes.
 - `ps` uses `comm=` (~70 KB) rather than full command lines (~180 KB).
 - No `nettop`, `system_profiler` or `ioreg`, and no binary command output: Tinycast's UTF-8 decoder throws on invalid bytes.

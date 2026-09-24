@@ -197,9 +197,18 @@ export function readStatusFiles(alive: Set<number>): StatusFile[] {
 
 const transcriptPaths = new Map<string, string>();
 
-function findTranscript(sessionId: string): string | undefined {
+/** Claude Code stores a session under ~/.claude/projects/<cwd with every non-alphanumeric as "-">/. */
+export const projectSlug = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/g, "-");
+
+function findTranscript(sessionId: string, cwd: string): string | undefined {
   const known = transcriptPaths.get(sessionId);
   if (known && existsSync(known)) return known;
+  const direct = join(PROJECTS_DIR, projectSlug(cwd), `${sessionId}.jsonl`);
+  if (existsSync(direct)) {
+    transcriptPaths.set(sessionId, direct);
+    return direct;
+  }
+  // Every file call crosses Tinycast's native bridge, so the full folder scan is the fallback only.
   let dirs: string[];
   try {
     dirs = readdirSync(PROJECTS_DIR);
@@ -216,23 +225,43 @@ function findTranscript(sessionId: string): string | undefined {
   return undefined;
 }
 
-// git answers are cached for 30 s per folder; branch and change counts don't move faster than that.
-const gitCache = new Map<string, { at: number; repo?: Repo }>();
+// Repo roots are found by walking up for a .git entry (a folder, or a file in worktrees),
+// which costs a few existsSync calls instead of a git process. Git then runs once per repo.
+const rootCache = new Map<string, string | null>();
+const statusCache = new Map<string, { at: number; repo: Repo }>();
+
+export function repoRoot(dir: string): string | undefined {
+  const hit = rootCache.get(dir);
+  if (hit !== undefined) return hit ?? undefined;
+  let d = dir;
+  let root: string | null = null;
+  while (d && d !== "/" && d.startsWith("/")) {
+    if (existsSync(join(d, ".git"))) {
+      root = d;
+      break;
+    }
+    if (d === HOME) break;
+    d = d.slice(0, d.lastIndexOf("/")) || "/";
+  }
+  rootCache.set(dir, root);
+  return root ?? undefined;
+}
 
 export async function repoOf(dir: string): Promise<Repo | undefined> {
-  const hit = gitCache.get(dir);
+  const root = repoRoot(dir);
+  if (!root) return undefined;
+  const hit = statusCache.get(root);
   if (hit && Date.now() - hit.at < 30_000) return hit.repo;
-  let repo: Repo | undefined;
+  let repo: Repo = { root, changes: 0 };
   try {
-    const root = (await run("/usr/bin/git", ["-C", dir, "rev-parse", "--show-toplevel"], 3000)).trim();
-    const status = await run("/usr/bin/git", ["-C", root, "status", "--porcelain=v1", "--branch"], 5000);
+    const status = await run("/usr/bin/git", ["-C", root, "status", "--porcelain=v1", "--branch", "--untracked-files=normal"], 5000);
     const lines = status.split("\n").filter(Boolean);
     const head = lines[0]?.match(/^## (?:No commits yet on )?([^.\s]+)/)?.[1];
     repo = { root, branch: head && head !== "HEAD" ? head : undefined, changes: lines.length - 1 };
   } catch {
-    repo = undefined;
+    // not a readable repo after all: keep the root, skip branch and changes
   }
-  gitCache.set(dir, { at: Date.now(), repo });
+  statusCache.set(root, { at: Date.now(), repo });
   return repo;
 }
 
@@ -261,15 +290,15 @@ export function isKept(cwd: string, keep = readKeepList()): boolean {
   return keep.some((g) => globMatch(g, cwd));
 }
 
-export async function scanClaude(procs: Proc[], idle: Map<string, number>): Promise<Session[]> {
+export async function scanClaude(procs: Proc[], idle: Map<string, number>, withRepos = true): Promise<Session[]> {
   const byPid = new Map(procs.map((p) => [p.pid, p]));
   const keep = readKeepList();
   const sessions: Session[] = [];
   for (const f of readStatusFiles(new Set(byPid.keys()))) {
     const proc = byPid.get(f.pid)!;
-    const transcriptPath = findTranscript(f.sessionId);
+    const transcriptPath = findTranscript(f.sessionId, f.cwd);
     const t = transcriptPath ? readTranscript(transcriptPath) : undefined;
-    const repos = await reposFor([...(t?.editedDirs ?? []), f.cwd]);
+    const repos = withRepos ? await reposFor([...(t?.editedDirs ?? []), f.cwd]) : [];
     const busy = f.status === "busy";
     sessions.push({
       tool: "claude",

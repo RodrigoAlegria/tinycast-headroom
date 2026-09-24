@@ -1,6 +1,6 @@
 import { LocalStorage } from "@raycast/api";
 
-// One [epoch-minute, swapUsedMB] pair per minute, 24 h max: ~1,440 pairs, about 20 KB.
+// One [epoch-minute, swapUsedMB] pair per minute while the window is open, 24 h max: ~20 KB at most.
 const KEY = "swap-history-v1";
 const MAX_POINTS = 1440;
 

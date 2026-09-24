@@ -20,13 +20,6 @@
       "title": "Headroom",
       "description": "Memory pressure, Claude Code sessions and heavy apps",
       "mode": "view"
-    },
-    {
-      "name": "menubar",
-      "title": "Headroom Menu Bar",
-      "description": "Swap and Claude session count in the menu bar",
-      "mode": "menu-bar",
-      "interval": "1m"
     }
   ],
   "preferences": [

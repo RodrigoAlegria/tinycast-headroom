@@ -7,9 +7,9 @@ const dist = resolve(root, "dist");
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 
-// One bundle per command; Tinycast loads <command-name>.js from the extension root.
+// Tinycast loads <command-name>.js from the extension root.
 await build({
-  entryPoints: { index: resolve(root, "src/index.tsx"), menubar: resolve(root, "src/menubar.tsx") },
+  entryPoints: { index: resolve(root, "src/index.tsx") },
   outdir: dist,
   bundle: true,
   format: "cjs",

@@ -159,11 +159,15 @@ export default function Command() {
     async () => {
       try {
         const [procs, idle] = await timed(CMD, "ps + w", () => Promise.all([readProcs(), readIdle()]), 1000);
-        const scan = await scanAgents(CMD, procs, idle);
-        setScanned(scan.sessions);
-        setScanErrors(scan.errors);
         setAgentKB(procs.filter((p) => /(^|\/)(claude|codex)$/.test(p.comm)).reduce((s, p) => s + p.rssKB, 0));
         setApps(heavyApps(procs));
+        // Two passes: sessions show as soon as they're read; repo, branch and changes (git) fill in after.
+        const fast = await scanAgents(CMD, procs, idle, false);
+        setScanned((current) => (current ? mergeRepos(fast.sessions, current) : fast.sessions));
+        setScanErrors(fast.errors);
+        const full = await scanAgents(CMD, procs, idle, true);
+        setScanned(full.sessions);
+        setScanErrors(full.errors);
         setError("Sessions");
       } catch (e) {
         setError("Sessions", errorText(e));
@@ -264,6 +268,7 @@ export default function Command() {
 
   const commonActions = (
     <>
+      <Action title="Refresh" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={refresh} />
       {victims.length > 0 && (
         <Action
           title={`Reap ${victims.length} Idle (${kb(reapAllKB)})…`}
@@ -273,7 +278,6 @@ export default function Command() {
           onAction={() => reapPids(victims.map((v) => v.pid))}
         />
       )}
-      <Action title="Refresh" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={refresh} />
       <Action title="Take Screenshot" icon={Icon.Camera} shortcut={{ modifiers: ["cmd", "shift"], key: "s" }} onAction={screenshot} />
       <Action.ShowInFinder title="Show Log File" path={LOG_FILE} shortcut={{ modifiers: ["cmd", "shift"], key: "l" }} />
     </>
@@ -311,7 +315,7 @@ export default function Command() {
             id="pressure"
             icon={{ source: Icon.CircleFilled, tintColor: pressureColor[memory.pressure] }}
             title="Memory pressure"
-            accessories={[{ tag: { value: pressureLabel[memory.pressure], color: pressureColor[memory.pressure] } }]}
+            accessories={[{ text: { value: pressureLabel[memory.pressure], color: pressureColor[memory.pressure] } }]}
             detail={<MemoryDetail memory={memory} history={history} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
@@ -329,7 +333,7 @@ export default function Command() {
             icon={Icon.Terminal}
             title="Agent sessions"
             subtitle={sessions ? counts || "none running" : "loading…"}
-            accessories={[{ text: kb(agentKB) }]}
+            accessories={[{ text: sessions ? kb(agentKB) : "…" }]}
             detail={<MemoryDetail memory={memory} history={history} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
@@ -351,8 +355,7 @@ export default function Command() {
           <List.Item
             id="shells"
             icon={Icon.Terminal}
-            title={`${shells.length} idle login shell${shells.length === 1 ? "" : "s"}`}
-            subtitle="no child processes"
+            title={`${shells.length} idle shell${shells.length === 1 ? "" : "s"}`}
             accessories={[{ text: kb(shells.reduce((s, v) => s + v.rssKB, 0)) }]}
             detail={
               <List.Item.Detail
@@ -393,6 +396,15 @@ export default function Command() {
       )}
     </List>
   );
+}
+
+/** Keeps repo details from the last full pass so rows don't flicker while git runs again. */
+function mergeRepos(fresh: Session[], previous: Session[]): Session[] {
+  const byKey = new Map(previous.map((s) => [s.key, s]));
+  return fresh.map((s) => {
+    const old = byKey.get(s.key);
+    return old && !s.repo ? { ...s, repo: old.repo, otherRepos: old.otherRepos, workspace: s.workspace ?? old.workspace, ticket: s.ticket ?? old.ticket } : s;
+  });
 }
 
 function MemoryDetail({ memory, history }: { memory: Memory; history: Point[] }) {
