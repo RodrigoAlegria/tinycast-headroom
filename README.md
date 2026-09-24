@@ -4,7 +4,9 @@ A Tinycast extension for a 16 GB Mac that keeps running out of memory. It shows 
 
 ## Command
 
-**Headroom**: memory pressure, swap history, agent sessions grouped as Reapable / Working / Waiting for you / Kept, idle shells, heavy apps with Quit.
+**Headroom**: memory pressure (with when it started), a swap gauge and memory breakdown, swap history, agent sessions grouped as Reapable / Working / Waiting for you / Kept, idle shells, heavy apps with Quit.
+
+Session actions: Show Session (switches to its Orca tab, or its Terminal / iTerm2 tab, or the app), Open ticket in Linear, copy resume command / branch / ticket, keep this folder, reap. Reaping opens a dry-run page first, then shows what changed. ⌘⇧K edits the keep list.
 
 ## Performance budget
 

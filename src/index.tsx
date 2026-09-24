@@ -11,12 +11,17 @@ import {
   open,
   showToast,
   Toast,
+  useNavigation,
 } from "@raycast/api";
 import { existsSync } from "fs";
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanAgents } from "./lib/agents";
-import { ago, clock, duration, gb, kb, mbOrGb, pressureColor, pressureLabel, sparkline } from "./lib/format";
-import { Point, recordSwap } from "./lib/history";
+import { compareBars, memoryPanel, sparkline } from "./lib/charts";
+import { latestClaudeVersion, linearUrl, showSession, versionLag } from "./lib/focus";
+import { KeepListForm } from "./keep-list-form";
+import { ReapView } from "./reap-view";
+import { ago, clock, duration, gb, kb, mbOrGb, pressureColor, pressureLabel } from "./lib/format";
+import { Point, PressureState, recordPressure, recordSwap } from "./lib/history";
 import { LOG_FILE, log, timed } from "./lib/log";
 import type { AppGroup, Memory } from "./lib/parse";
 import {
@@ -40,6 +45,7 @@ import {
 interface Preferences {
   reapPath?: string;
   idleThreshold?: string;
+  linearWorkspace?: string;
 }
 
 const CMD = "index";
@@ -141,6 +147,9 @@ export default function Command() {
 
   const [memory, setMemory] = useState<Memory>();
   const [history, setHistory] = useState<Point[]>([]);
+  const [pressureState, setPressureState] = useState<PressureState>();
+  const { push } = useNavigation();
+  const linearWorkspace = prefs.linearWorkspace?.trim() || "linkthings";
   const [scanned, setScanned] = useState<Session[]>();
   const [scanErrors, setScanErrors] = useState<Partial<Record<Tool, string>>>({});
   const [agentKB, setAgentKB] = useState(0);
@@ -167,6 +176,7 @@ export default function Command() {
       try {
         const m = await timed(CMD, "memory", readMemory, 1000);
         setMemory(m);
+        setPressureState(await recordPressure(m.pressure));
         setHistory(await recordSwap(m.swapUsedMB));
         setError("Memory");
       } catch (e) {
@@ -231,32 +241,18 @@ export default function Command() {
         await showToast({ style: Toast.Style.Failure, title: "Nothing to reap", message: "It is no longer idle past the threshold." });
         return;
       }
-      const totalKB = victims.reduce((s, v) => s + v.rssKB, 0);
-      const ok = await confirmAlert({
-        title: `Reap ${victims.length} process${victims.length === 1 ? "" : "es"} · ${kb(totalKB)}?`,
-        message: victims
-          .slice(0, 8)
-          .map((v) => `${v.kind === "session" ? "Claude" : "Shell"} ${v.tty}, idle ${duration(v.idleSeconds)}: ${tilde(v.cwd)}`)
-          .join("\n"),
-        primaryAction: { title: "Reap", style: Alert.ActionStyle.Destructive },
-      });
-      if (!ok) return;
-      const toast = await showToast({ style: Toast.Style.Animated, title: `Reaping ${victims.length}…` });
-      try {
-        const r = await reap(reapPath, idleSpec, true, victims.map((v) => v.pid));
-        log(CMD, `reaped ${r.victims.map((v) => v.pid).join(",")} freed ${r.reclaimKB} KB`);
-        toast.style = Toast.Style.Success;
-        toast.title = `Reaped ${r.victims.length} · freed ~${kb(r.reclaimKB)}`;
-        toast.message = r.after ? `Swap ${gb(r.before.swapUsedMB)} → ${gb(r.after.swapUsedMB)}` : undefined;
-      } catch (e) {
-        log(CMD, "reap failed", e);
-        toast.style = Toast.Style.Failure;
-        toast.title = "Reap failed";
-        toast.message = errorText(e);
-      }
-      refresh();
+      push(
+        <ReapView
+          victims={victims}
+          keptCount={dryRunRef.current?.kept.length ?? 0}
+          reapPath={reapPath}
+          idleSpec={idleSpec}
+          apps={apps}
+          onFinished={refresh}
+        />,
+      );
     },
-    [reapPath, idleSpec, refresh],
+    [reapPath, idleSpec, refresh, push, apps],
   );
 
   const quit = useCallback(
@@ -317,10 +313,24 @@ export default function Command() {
           onAction={() => reapPids(victims.map((v) => v.pid))}
         />
       )}
+      <Action
+        title="Edit Keep List…"
+        icon={Icon.Lock}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "k" }}
+        onAction={() => push(<KeepListForm sessions={sessions ?? []} onSaved={refresh} />)}
+      />
       <Action title="Take Screenshot" icon={Icon.Camera} shortcut={{ modifiers: ["cmd", "shift"], key: "s" }} onAction={screenshot} />
       <Action.ShowInFinder title="Show Log File" path={LOG_FILE} shortcut={{ modifiers: ["cmd", "shift"], key: "l" }} />
     </>
   );
+
+  // The session whose terminal read input most recently, within the last 2 minutes. Sessions can
+  // read their terminal while working too, so this is "typed in most recently", not proof of focus.
+  const inUseKey = (sessions ?? [])
+    .filter((x) => x.lastInputAt !== undefined && Date.now() - x.lastInputAt < 120_000)
+    .sort((a, b) => (b.lastInputAt ?? 0) - (a.lastInputAt ?? 0))[0]?.key;
+  const latestClaude = latestClaudeVersion();
+  const allClear = !!memory && memory.pressure === "normal" && (memory.swapTotalMB === 0 || memory.swapUsedMB / memory.swapTotalMB < 0.5) && victims.length === 0;
 
   const allErrors = { ...errors, ...Object.fromEntries(Object.entries(scanErrors).map(([t, m]) => [toolInfo[t as Tool].label, m])) };
   const groups: SessionState[] = ["reapable", "working", "waiting", "kept"];
@@ -350,25 +360,34 @@ export default function Command() {
       ))}
       {memory && (
         <List.Section title="Right Now">
+          {allClear && (
+            <List.Item
+              id="all-clear"
+              icon={{ source: Icon.CheckCircle, tintColor: Color.Green }}
+              title="All clear"
+              detail={<AllClearDetail memory={memory} history={history} pressure={pressureState} sessions={sessions?.length ?? 0} idleSpec={idleSpec} />}
+              actions={<ActionPanel>{commonActions}</ActionPanel>}
+            />
+          )}
           <List.Item
             id="pressure"
             icon={{ source: Icon.CircleFilled, tintColor: pressureColor[memory.pressure] }}
             title={`Pressure: ${pressureLabel[memory.pressure]}`}
-            detail={<MemoryDetail memory={memory} history={history} />}
+            detail={<MemoryDetail memory={memory} history={history} pressure={pressureState} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
           <List.Item
             id="swap"
             icon={{ source: Icon.MemoryChip, tintColor: pressureColor[memory.pressure] }}
             title={`Swap: ${gb1(memory.swapUsedMB)}${memory.swapTotalMB ? ` · ${Math.round((memory.swapUsedMB / memory.swapTotalMB) * 100)}%` : ""}`}
-            detail={<MemoryDetail memory={memory} history={history} />}
+            detail={<MemoryDetail memory={memory} history={history} pressure={pressureState} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
           <List.Item
             id="agents"
             icon={toolIcon("claude")}
             title={sessions ? `${sessions.length} agent session${sessions.length === 1 ? "" : "s"} · ${gb1(agentKB / 1024)}` : "Agent sessions: loading…"}
-            detail={<MemoryDetail memory={memory} history={history} agentsLine={counts} />}
+            detail={<MemoryDetail memory={memory} history={history} pressure={pressureState} agentsLine={counts} />}
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
         </List.Section>
@@ -379,7 +398,16 @@ export default function Command() {
         return (
           <List.Section key={g} title={`${sectionTitle[g]} · ${items.length}`}>
             {items.map((s) => (
-              <SessionItem key={s.key} session={s} onReap={() => s.pid && reapPids([s.pid])} commonActions={commonActions} onChanged={refresh} />
+              <SessionItem
+                key={s.key}
+                session={s}
+                inUse={s.key === inUseKey}
+                latestClaude={latestClaude}
+                linearWorkspace={linearWorkspace}
+                onReap={() => s.pid && reapPids([s.pid])}
+                commonActions={commonActions}
+                onChanged={refresh}
+              />
             ))}
           </List.Section>
         );
@@ -415,7 +443,7 @@ export default function Command() {
               icon={appIcon(a)}
               title={a.name}
               accessories={[{ text: gb1(a.rssKB / 1024) }]}
-              detail={<AppDetail app={a} memory={memory} reapKB={reapAllKB} />}
+              detail={<AppDetail app={a} memory={memory} reapKB={reapAllKB} agentKB={agentKB} />}
               actions={
                 <ActionPanel>
                   {a.quittable && <Action title="Quit App…" icon={Icon.XMarkCircle} style={Action.Style.Destructive} onAction={() => quit(a)} />}
@@ -439,52 +467,75 @@ function mergeRepos(fresh: Session[], previous: Session[]): Session[] {
   });
 }
 
-function MemoryDetail({ memory, history, agentsLine }: { memory: Memory; history: Point[]; agentsLine?: string }) {
+function sinceLine(p: PressureState | undefined, level: string): string {
+  if (!p || p.level !== level) return "";
+  return p.observed ? ` since ${clock(p.since)}` : ` · seen since ${clock(p.since)}`;
+}
+
+function MemoryDetail({ memory, history, pressure, agentsLine }: { memory: Memory; history: Point[]; pressure?: PressureState; agentsLine?: string }) {
   const chart = sparkline(history.slice(-60), memory.swapTotalMB);
   const markdown = [
-    `## ${pressureLabel[memory.pressure]}`,
+    `## ${pressureLabel[memory.pressure]}${sinceLine(pressure, memory.pressure)}`,
     memory.pressure === "normal"
       ? "Plenty of headroom."
       : "macOS is compressing memory and swapping to disk. Switching apps will feel slow. kernel_task and WindowServer running hot is a symptom of this, not the cause.",
-    chart ? `**Swap used, last hour**\n\n![Swap used](${chart})` : "_The swap chart fills in as samples come in, one a minute._",
+    `![Swap and memory](${memoryPanel(memory)})`,
+    chart ? `**Swap used, last hour**\n\n![Swap used](${chart})` : "_The swap chart fills in as samples come in, one a minute while Headroom is open._",
     agentsLine ? `**Agent sessions:** ${agentsLine}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
-  return (
-    <List.Item.Detail
-      markdown={markdown}
-      metadata={
-        <List.Item.Detail.Metadata>
-          <List.Item.Detail.Metadata.TagList title="Pressure">
-            <List.Item.Detail.Metadata.TagList.Item text={pressureLabel[memory.pressure]} color={pressureColor[memory.pressure]} />
-          </List.Item.Detail.Metadata.TagList>
-          <List.Item.Detail.Metadata.Label title="Swap" text={`${gb(memory.swapUsedMB)} of ${gb(memory.swapTotalMB)}`} />
-          <List.Item.Detail.Metadata.Label title="Compressed" text={mbOrGb(memory.compressedMB)} />
-          <List.Item.Detail.Metadata.Label title="Wired" text={mbOrGb(memory.wiredMB)} />
-          <List.Item.Detail.Metadata.Label title="Free" text={mbOrGb(memory.freeMB)} />
-          <List.Item.Detail.Metadata.Label title="Installed" text={gb(memory.totalMB)} />
-        </List.Item.Detail.Metadata>
-      }
-    />
-  );
+  return <List.Item.Detail markdown={markdown} />;
+}
+
+function AllClearDetail({
+  memory,
+  history,
+  pressure,
+  sessions,
+  idleSpec,
+}: {
+  memory: Memory;
+  history: Point[];
+  pressure?: PressureState;
+  sessions: number;
+  idleSpec: string;
+}) {
+  const chart = sparkline(history.slice(-60), memory.swapTotalMB);
+  const markdown = [
+    `## Plenty of headroom`,
+    `Pressure is normal${sinceLine(pressure, memory.pressure)}, swap is under half full and nothing is idle past ${idleSpec}. ${sessions} agent session${sessions === 1 ? "" : "s"} running.`,
+    `![Swap and memory](${memoryPanel(memory)})`,
+    chart ? `![Swap used](${chart})` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return <List.Item.Detail markdown={markdown} />;
 }
 
 function SessionItem({
   session: s,
+  inUse,
+  latestClaude,
+  linearWorkspace,
   onReap,
   commonActions,
   onChanged,
 }: {
   session: Session;
+  inUse: boolean;
+  latestClaude?: string;
+  linearWorkspace: string;
   onReap: () => void;
   commonActions: ReactNode;
   onChanged: () => void;
 }) {
   const tool = toolInfo[s.tool];
+  const lag = s.tool === "claude" ? versionLag(s.version, latestClaude) : undefined;
   const waitingFor = s.statusSince ? (Date.now() - s.statusSince) / 1000 : undefined;
-  const accessory =
-    s.state === "reapable"
+  const accessory = inUse
+    ? { icon: { source: Icon.Keyboard, tintColor: Color.Blue }, tooltip: "Typed in most recently" }
+    : s.state === "reapable"
       ? { text: { value: short(s.idleSeconds), color: Color.Red }, tooltip: "Idle past the threshold" }
       : s.state === "waiting"
         ? { text: { value: short(waitingFor), color: Color.Orange }, tooltip: "Waiting for you" }
@@ -512,7 +563,8 @@ function SessionItem({
     : [`Not in a git repo · ran from ${code(tilde(s.cwd))}`];
   const lines = [
     `## ${s.title}`,
-    `${stateLine} · ${tool.label} in ${s.origin}`,
+    `${stateLine} · ${tool.label} in ${s.origin}${inUse ? " · typed in most recently" : ""}`,
+    lag ? `⚠️ Running an old Claude Code, **${lag}**. Restart this session to update it.` : "",
     s.topic && s.topic !== s.title ? `> ${s.topic}` : "",
     "#### Latest",
     s.lastPrompt ? `**You:** ${s.lastPrompt}` : "",
@@ -527,7 +579,7 @@ function SessionItem({
       s.rssKB !== undefined ? kb(s.rssKB) : "",
       s.startedAt ? `started ${clock(s.startedAt)}` : "",
       s.model ?? "",
-      s.version ? `v${s.version}` : "",
+      s.version ? `v${s.version}${lag ? " (old)" : ""}` : "",
     ]
       .filter(Boolean)
       .join(" · "),
@@ -544,7 +596,28 @@ function SessionItem({
       detail={<List.Item.Detail markdown={markdown} />}
       actions={
         <ActionPanel>
-          {s.resumeCommand && <Action.CopyToClipboard title="Copy Resume Command" content={s.resumeCommand} />}
+          {(s.pid !== undefined || s.origin === "OpenCode Desktop") && (
+            <Action
+              title="Show Session"
+              icon={Icon.Window}
+              onAction={async () => {
+                const toast = await showToast({ style: Toast.Style.Animated, title: "Finding its window…" });
+                try {
+                  toast.title = await showSession(s);
+                  toast.style = Toast.Style.Success;
+                } catch (e) {
+                  log(CMD, `show session ${s.key} failed`, e);
+                  toast.style = Toast.Style.Failure;
+                  toast.title = "Couldn't show this session";
+                  toast.message = errorText(e);
+                }
+              }}
+            />
+          )}
+          {s.ticket && (
+            <Action.OpenInBrowser title={`Open ${s.ticket} in Linear`} url={linearUrl(linearWorkspace, s.ticket)} shortcut={{ modifiers: ["cmd"], key: "l" }} />
+          )}
+          {s.resumeCommand && <Action.CopyToClipboard title="Copy Resume Command" content={s.resumeCommand} shortcut={{ modifiers: ["cmd", "shift"], key: "c" }} />}
           {s.repo?.branch && <Action.CopyToClipboard title="Copy Branch Name" content={s.repo.branch} shortcut={{ modifiers: ["cmd"], key: "b" }} />}
           {s.ticket && <Action.CopyToClipboard title={`Copy ${s.ticket}`} content={s.ticket} shortcut={{ modifiers: ["cmd"], key: "t" }} />}
           <Action.ShowInFinder title="Show Folder in Finder" path={s.repo?.root ?? s.cwd} />
@@ -569,23 +642,30 @@ function SessionItem({
   );
 }
 
-function AppDetail({ app, memory, reapKB }: { app: AppGroup; memory?: Memory; reapKB: number }) {
-  const share = memory ? Math.round((app.rssKB / 1024 / memory.totalMB) * 100) : undefined;
-  return (
-    <List.Item.Detail
-      markdown={`## ${app.name}\n\n${
-        reapKB && app.rssKB > reapKB * 2
-          ? `Holds about ${Math.round(app.rssKB / Math.max(reapKB, 1))}× more than reaping every idle session would free.`
-          : ""
-      }`}
-      metadata={
-        <List.Item.Detail.Metadata>
-          <List.Item.Detail.Metadata.Label title="Memory" text={kb(app.rssKB)} />
-          <List.Item.Detail.Metadata.Label title="Processes" text={String(app.processes)} />
-          {share !== undefined && <List.Item.Detail.Metadata.Label title="Share of RAM" text={`${share}%`} />}
-          <List.Item.Detail.Metadata.Label title="Quit" text={app.quittable ? "Available (asks first)" : "Not an app bundle"} />
-        </List.Item.Detail.Metadata>
-      }
-    />
+function AppDetail({ app, memory, reapKB, agentKB }: { app: AppGroup; memory?: Memory; reapKB: number; agentKB: number }) {
+  const mb = app.rssKB / 1024;
+  const share = memory ? Math.round((mb / memory.totalMB) * 100) : undefined;
+  const bars = compareBars(
+    [
+      { label: app.name, mb, color: "#0E7C86" },
+      { label: "Reapable now", mb: reapKB / 1024, color: "#D2453B" },
+      { label: "All agents", mb: agentKB / 1024, color: "#D48A10" },
+    ],
+    memory ? memory.totalMB / 4 : mb,
   );
+  const ratio = reapKB > 0 ? app.rssKB / reapKB : 0;
+  const markdown = [
+    `## ${app.name}`,
+    `**${kb(app.rssKB)}**${share !== undefined ? ` · ${share}% of RAM` : ""} · ${app.processes} process${app.processes === 1 ? "" : "es"}`,
+    `![Compared](${bars})`,
+    ratio >= 2
+      ? `Quitting ${app.name} frees about **${Math.round(ratio)}×** more than reaping every idle session.`
+      : reapKB === 0
+        ? "Nothing is reapable right now, so quitting an app is the only way to free this much."
+        : "",
+    app.quittable ? "Quit asks the app to close normally, so it can save first." : "Not an app bundle, so Headroom can't ask it to quit.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return <List.Item.Detail markdown={markdown} />;
 }

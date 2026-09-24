@@ -2,7 +2,7 @@ import { closeSync, openSync, readFileSync, statSync } from "fs";
 import { basename, isAbsolute, join } from "path";
 import { log, timed } from "./log";
 import type { Proc } from "./parse";
-import { displayTitle, HOME, located, reposFor, run, scanClaude, Session, Tool } from "./system";
+import { displayTitle, HOME, located, reposFor, run, scanClaude, Session, Tool, ttyLastInput } from "./system";
 import { linesOf, oneLine, readWindow, WINDOW_BYTES } from "./transcript";
 
 // ---------- Codex ----------
@@ -214,6 +214,7 @@ export async function scanCodex(procs: Proc[], idle: Map<string, number>, withRe
         pid,
         tty: proc?.tty,
         idleSeconds: proc?.tty ? idle.get(proc.tty) : undefined,
+        lastInputAt: ttyLastInput(proc?.tty),
         rssKB: paths.length === 1 ? proc?.rssKB : undefined, // an app-server hosting several threads can't split its memory
         topic: head.topic ?? tail.lastPrompt,
         lastPrompt: tail.lastPrompt,

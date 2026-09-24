@@ -1,5 +1,5 @@
 import { execFile } from "child_process";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import {
@@ -105,7 +105,20 @@ export async function takeScreenshot(delaySeconds = 1): Promise<string> {
 
 // ---------- keep list (shared with claude-reap) ----------
 
-const KEEP_FILE = join(HOME, ".config/claude-reap/keep");
+export const KEEP_FILE = join(HOME, ".config/claude-reap/keep");
+
+export function readKeepFile(): string {
+  try {
+    return readFileSync(KEEP_FILE, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+export function writeKeepFile(text: string): void {
+  mkdirSync(join(HOME, ".config/claude-reap"), { recursive: true });
+  writeFileSync(KEEP_FILE, text.endsWith("\n") || !text ? text : `${text}\n`);
+}
 
 export function readKeepList(): string[] {
   try {
@@ -141,6 +154,7 @@ export interface Session {
   pid?: number;
   tty?: string;
   idleSeconds?: number;
+  lastInputAt?: number; // last read from its terminal, to the second (w only knows minutes)
   rssKB?: number;
   topic?: string;
   lastPrompt?: string;
@@ -316,6 +330,16 @@ export function located(cwd: string, repos: Repo[], fallbackBranch?: string) {
   };
 }
 
+/** Last access of the terminal device: when input was last read from it. */
+export function ttyLastInput(tty: string | undefined): number | undefined {
+  if (!tty) return undefined;
+  try {
+    return statSync(`/dev/tty${tty.replace(/^tty/, "")}`).atimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
 export function isKept(cwd: string, keep = readKeepList()): boolean {
   return keep.some((g) => globMatch(g, cwd));
 }
@@ -346,6 +370,7 @@ export async function scanClaude(procs: Proc[], idle: Map<string, number>, withR
       pid: f.pid,
       tty: proc.tty,
       idleSeconds: proc.tty ? idle.get(proc.tty) : undefined,
+      lastInputAt: ttyLastInput(proc.tty),
       rssKB: proc.rssKB,
       topic: t?.topic,
       lastPrompt: t?.lastPrompt,

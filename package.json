@@ -60,6 +60,14 @@
           "value": "7d"
         }
       ]
+    },
+    {
+      "name": "linearWorkspace",
+      "type": "textfield",
+      "title": "Linear Workspace",
+      "description": "Workspace slug for ticket links: linear.app/<slug>/issue/…",
+      "default": "linkthings",
+      "required": false
     }
   ],
   "scripts": {

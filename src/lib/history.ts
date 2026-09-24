@@ -1,4 +1,7 @@
 import { LocalStorage } from "@raycast/api";
+import { nextPressureState, PressureState } from "./pressure";
+
+export type { PressureState } from "./pressure";
 
 // One [epoch-minute, swapUsedMB] pair per minute while the window is open, 24 h max: ~20 KB at most.
 const KEY = "swap-history-v1";
@@ -28,4 +31,35 @@ export async function recordSwap(swapMB: number, now = Date.now()): Promise<Poin
     // storage unavailable: the chart just stays short
   }
   return trimmed;
+}
+
+// ---------- pressure level changes ----------
+// When the current level started. Only trusted when Headroom was watching without a gap:
+// after more than 5 minutes unwatched, a change could have been missed, so `observed` is false
+// and the page says "seen since" instead of claiming when it began.
+const PRESSURE_KEY = "pressure-state-v2";
+
+let lastPressure: PressureState | undefined;
+
+export async function recordPressure(level: string, now = Date.now()): Promise<PressureState> {
+  if (!lastPressure) {
+    try {
+      const raw = await LocalStorage.getItem<string>(PRESSURE_KEY);
+      lastPressure = raw ? (JSON.parse(raw) as PressureState) : undefined;
+    } catch {
+      lastPressure = undefined;
+    }
+  }
+  const next = nextPressureState(lastPressure, level, now);
+  const changed = !lastPressure || next.level !== lastPressure.level || next.since !== lastPressure.since;
+  lastPressure = next;
+  // Persist on changes, otherwise only in the first 5 s of each minute (one 5 s poll), to keep writes rare.
+  if (changed || now % 60000 < 5000) {
+    try {
+      await LocalStorage.setItem(PRESSURE_KEY, JSON.stringify(next));
+    } catch {
+      // not persisted: the page still knows for this session
+    }
+  }
+  return next;
 }
