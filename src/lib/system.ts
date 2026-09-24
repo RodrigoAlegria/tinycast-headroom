@@ -404,12 +404,14 @@ export interface ReapResult {
   stragglers: number[];
 }
 
-export async function reap(reapPath: string, idle: string, apply: boolean, only?: number[]): Promise<ReapResult> {
+/** `ignoreIdle` closes the named PIDs even when they're not idle; claude-reap refuses it without `only`. */
+export async function reap(reapPath: string, idle: string, apply: boolean, only?: number[], ignoreIdle = false): Promise<ReapResult> {
   // Applying always names the exact PIDs the person confirmed; claude-reap re-checks each is still reapable.
   if (apply && !only?.length) throw new Error("Refusing to reap without an explicit PID list");
   const args = ["--json", "--idle", idle];
   if (apply) args.push("--apply");
   if (only) args.push("--only", only.join(","));
+  if (ignoreIdle) args.push("--ignore-idle");
   const out = await run(expandTilde(reapPath), args, 30_000);
   return JSON.parse(out) as ReapResult;
 }

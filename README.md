@@ -58,7 +58,11 @@ Reaping is delegated to `~/bin/claude-reap` (path configurable), which needs `--
 ```sh
 claude-reap --json                       # dry run, machine-readable
 claude-reap --json --apply --only 44887  # reap only confirmed PIDs, re-checked first
+claude-reap --json --apply --only 14207 --ignore-idle  # close one chosen session that isn't idle
 ```
+
+`--ignore-idle` is refused without `--only`, so it can never widen a scan. The keep list and
+claude-reap's own terminal stay protected either way.
 
 Headroom never sends signals itself. It always passes the exact PIDs you confirmed, and claude-reap re-checks each one is still idle before sending SIGHUP (then SIGKILL).
 

@@ -1,4 +1,5 @@
 import { Action, ActionPanel, Detail, Icon, useNavigation } from "@raycast/api";
+import { CopyAction } from "./copy-action";
 import { ReactNode, useState } from "react";
 import { gb, kb } from "./lib/format";
 import { log } from "./lib/log";
@@ -36,6 +37,8 @@ export function ReapView(props: {
   idleSpec: string;
   apps: AppGroup[];
   onFinished: () => void;
+  /** Closing one chosen session that isn't idle: says so plainly and offers its resume command. */
+  close?: { title: string; state: string; resumeCommand?: string };
 }) {
   const { pop } = useNavigation();
   const [phase, setPhase] = useState<Phase>({ step: "confirm" });
@@ -47,7 +50,7 @@ export function ReapView(props: {
   const go = async () => {
     setPhase({ step: "reaping" });
     try {
-      const result = await reap(props.reapPath, props.idleSpec, true, victims.map((v) => v.pid));
+      const result = await reap(props.reapPath, props.idleSpec, true, victims.map((v) => v.pid), !!props.close);
       log("index", `reaped ${result.victims.map((v) => v.pid).join(",")} freed ${result.reclaimKB} KB`);
       setPhase({ step: "done", result });
     } catch (e) {
@@ -59,7 +62,25 @@ export function ReapView(props: {
 
   let markdown: string;
   let actions: ReactNode;
-  if (phase.step === "confirm") {
+  if (phase.step === "confirm" && props.close) {
+    const c = props.close;
+    markdown = [
+      `## Close “${c.title}”?`,
+      `This session is **${c.state}**, not idle. Closing it ends the conversation in its terminal. You can pick it up again later with its resume command.`,
+      victimTable(victims),
+      c.resumeCommand ? `**Resume later:** \`${c.resumeCommand.replace(/`/g, "'")}\`` : "",
+      "Nothing is closed until you press **↵**.",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    actions = (
+      <ActionPanel>
+        <Action title="Close Session" icon={Icon.Trash} style={Action.Style.Destructive} onAction={go} />
+        {c.resumeCommand && <CopyAction title="Copy Resume Command First" content={c.resumeCommand} shortcut={{ modifiers: ["cmd", "shift"], key: "c" }} />}
+        <Action title="Cancel" icon={Icon.XMarkCircle} onAction={pop} />
+      </ActionPanel>
+    );
+  } else if (phase.step === "confirm") {
     markdown = [
       `## ${victims.length} ${noun} · ${kb(totalKB)}`,
       `Idle longer than **${props.idleSpec}**. Your keep list${props.keptCount ? ` (${props.keptCount} skipped)` : ""} and newer sessions are left alone.`,
@@ -108,5 +129,5 @@ export function ReapView(props: {
     );
   }
 
-  return <Detail isLoading={phase.step === "reaping"} navigationTitle="Reap Idle Processes" markdown={markdown} actions={actions} />;
+  return <Detail isLoading={phase.step === "reaping"} navigationTitle={props.close ? "Close Session" : "Reap Idle Processes"} markdown={markdown} actions={actions} />;
 }

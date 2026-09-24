@@ -1,9 +1,7 @@
 import {
   Action,
   ActionPanel,
-  Alert,
   Color,
-  confirmAlert,
   getPreferenceValues,
   Icon,
   Image,
@@ -14,11 +12,13 @@ import {
   useNavigation,
 } from "@raycast/api";
 import { existsSync } from "fs";
+import { CopyAction } from "./copy-action";
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanAgents } from "./lib/agents";
 import { compareBars, memoryPanel } from "./lib/charts";
 import { latestClaudeVersion, linearUrl, showSession, versionLag } from "./lib/focus";
 import { KeepListForm } from "./keep-list-form";
+import { QuitAppView } from "./quit-app-view";
 import { ReapView } from "./reap-view";
 import { ago, clock, duration, gb, kb, mbOrGb, pressureColor, pressureLabel } from "./lib/format";
 import { Point, PressureState, recordPressure, recordSwap } from "./lib/history";
@@ -260,25 +260,26 @@ export default function Command() {
     [reapPath, idleSpec, refresh, push, apps],
   );
 
-  const quit = useCallback(
-    async (app: AppGroup) => {
-      const ok = await confirmAlert({
-        title: `Quit ${app.name}?`,
-        message: `Frees about ${kb(app.rssKB)}. The app is asked to quit normally, so it can save first.`,
-        primaryAction: { title: "Quit", style: Alert.ActionStyle.Destructive },
-      });
-      if (!ok) return;
-      try {
-        await quitApp(app.name);
-        log(CMD, `asked ${app.name} to quit`);
-        await showToast({ style: Toast.Style.Success, title: `Asked ${app.name} to quit` });
-      } catch (e) {
-        log(CMD, `quit ${app.name} failed`, e);
-        await showToast({ style: Toast.Style.Failure, title: `Could not quit ${app.name}`, message: errorText(e) });
-      }
-      refresh();
+  const quit = useCallback((app: AppGroup) => push(<QuitAppView app={app} onFinished={refresh} />), [push, refresh]);
+
+  // Closing one session that isn't idle: built from the session itself, since the dry run only lists
+  // idle ones. claude-reap still checks the keep list and never touches its own terminal.
+  const closeSession = useCallback(
+    (s: Session) => {
+      if (s.pid === undefined || !s.tty) return;
+      push(
+        <ReapView
+          victims={[{ pid: s.pid, tty: s.tty, idleSeconds: s.idleSeconds ?? 0, rssKB: s.rssKB ?? 0, kind: "session", cwd: s.cwd }]}
+          keptCount={0}
+          reapPath={reapPath}
+          idleSpec={idleSpec}
+          apps={apps}
+          onFinished={refresh}
+          close={{ title: s.title, state: s.state === "working" ? "working right now" : "waiting for you", resumeCommand: s.resumeCommand }}
+        />,
+      );
     },
-    [refresh],
+    [push, reapPath, idleSpec, apps, refresh],
   );
 
   const screenshot = useCallback(async () => {
@@ -394,6 +395,7 @@ export default function Command() {
                 latestClaude={latestClaude}
                 linearWorkspace={linearWorkspace}
                 onReap={() => s.pid && reapPids([s.pid])}
+                onClose={() => closeSession(s)}
                 commonActions={commonActions}
                 onChanged={refresh}
               />
@@ -506,10 +508,12 @@ function SessionItem({
   latestClaude,
   linearWorkspace,
   onReap,
+  onClose,
   commonActions,
   onChanged,
 }: {
   session: Session;
+  onClose: () => void;
   inUse: boolean;
   latestClaude?: string;
   linearWorkspace: string;
@@ -604,9 +608,9 @@ function SessionItem({
           {s.ticket && (
             <Action.OpenInBrowser title={`Open ${s.ticket} in Linear`} url={linearUrl(linearWorkspace, s.ticket)} shortcut={{ modifiers: ["cmd"], key: "l" }} />
           )}
-          {s.resumeCommand && <Action.CopyToClipboard title="Copy Resume Command" content={s.resumeCommand} shortcut={{ modifiers: ["cmd", "shift"], key: "c" }} />}
-          {s.repo?.branch && <Action.CopyToClipboard title="Copy Branch Name" content={s.repo.branch} shortcut={{ modifiers: ["cmd"], key: "b" }} />}
-          {s.ticket && <Action.CopyToClipboard title={`Copy ${s.ticket}`} content={s.ticket} shortcut={{ modifiers: ["cmd"], key: "t" }} />}
+          {s.resumeCommand && <CopyAction title="Copy Resume Command" content={s.resumeCommand} shortcut={{ modifiers: ["cmd", "shift"], key: "c" }} />}
+          {s.repo?.branch && <CopyAction title="Copy Branch Name" content={s.repo.branch} shortcut={{ modifiers: ["cmd"], key: "b" }} />}
+          {s.ticket && <CopyAction title={`Copy ${s.ticket}`} content={s.ticket} shortcut={{ modifiers: ["cmd"], key: "t" }} />}
           <Action.ShowInFinder title="Show Folder in Finder" path={s.repo?.root ?? s.cwd} />
           {s.tool === "claude" && s.state !== "kept" && (
             <Action
@@ -621,6 +625,9 @@ function SessionItem({
           )}
           {s.state === "reapable" && (
             <Action title="Reap This Session…" icon={Icon.Trash} style={Action.Style.Destructive} shortcut={{ modifiers: ["ctrl"], key: "x" }} onAction={onReap} />
+          )}
+          {s.tool === "claude" && (s.state === "working" || s.state === "waiting") && s.tty && (
+            <Action title="Close This Session…" icon={Icon.Trash} style={Action.Style.Destructive} shortcut={{ modifiers: ["ctrl"], key: "x" }} onAction={onClose} />
           )}
           {commonActions}
         </ActionPanel>
