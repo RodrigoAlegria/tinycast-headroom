@@ -92,6 +92,11 @@ function appIcon(app: AppGroup): Image.ImageLike {
   return app.bundlePath ? { fileIcon: app.bundlePath } : Icon.AppWindow;
 }
 
+// Tinycast shrinks a row's accessory before its title, so titles are cut early to keep the
+// accessory (wait time, state icon) readable in the narrow list column.
+const LIST_TITLE_MAX = 22;
+const listTitle = (t: string) => (t.length > LIST_TITLE_MAX ? `${t.slice(0, LIST_TITLE_MAX - 1).trimEnd()}…` : t);
+
 /** "8m", "3h", "16d": fits the narrow list column Tinycast leaves next to the detail panel. */
 function short(seconds: number | undefined): string {
   if (seconds === undefined) return "";
@@ -339,6 +344,7 @@ export default function Command() {
     .filter(([, n]) => n > 0)
     .map(([t, n]) => `${n} ${toolInfo[t].label}`)
     .join(" · ");
+  const agentsLine = sessions ? `${sessions.length} running${counts ? ` (${counts})` : ""} · ${gb1(agentKB / 1024)}` : "loading…";
 
   return (
     <List isShowingDetail isLoading={!memory || !sessions} searchBarPlaceholder="Filter by name, topic, tool, repo, branch or ticket…">
@@ -360,34 +366,17 @@ export default function Command() {
       ))}
       {memory && (
         <List.Section title="Right Now">
-          {allClear && (
-            <List.Item
-              id="all-clear"
-              icon={{ source: Icon.CheckCircle, tintColor: Color.Green }}
-              title="All clear"
-              detail={<AllClearDetail memory={memory} history={history} pressure={pressureState} sessions={sessions?.length ?? 0} idleSpec={idleSpec} />}
-              actions={<ActionPanel>{commonActions}</ActionPanel>}
-            />
-          )}
           <List.Item
             id="pressure"
-            icon={{ source: Icon.CircleFilled, tintColor: pressureColor[memory.pressure] }}
-            title={`Pressure: ${pressureLabel[memory.pressure]}`}
-            detail={<MemoryDetail memory={memory} history={history} pressure={pressureState} />}
-            actions={<ActionPanel>{commonActions}</ActionPanel>}
-          />
-          <List.Item
-            id="swap"
-            icon={{ source: Icon.MemoryChip, tintColor: pressureColor[memory.pressure] }}
-            title={`Swap: ${gb1(memory.swapUsedMB)}${memory.swapTotalMB ? ` · ${Math.round((memory.swapUsedMB / memory.swapTotalMB) * 100)}%` : ""}`}
-            detail={<MemoryDetail memory={memory} history={history} pressure={pressureState} />}
-            actions={<ActionPanel>{commonActions}</ActionPanel>}
-          />
-          <List.Item
-            id="agents"
-            icon={toolIcon("claude")}
-            title={sessions ? `${sessions.length} agent session${sessions.length === 1 ? "" : "s"} · ${gb1(agentKB / 1024)}` : "Agent sessions: loading…"}
-            detail={<MemoryDetail memory={memory} history={history} pressure={pressureState} agentsLine={counts} />}
+            icon={allClear ? { source: Icon.CheckCircle, tintColor: Color.Green } : { source: Icon.CircleFilled, tintColor: pressureColor[memory.pressure] }}
+            title={allClear ? "All clear" : `Pressure: ${pressureLabel[memory.pressure]}`}
+            detail={
+              allClear ? (
+                <AllClearDetail memory={memory} history={history} pressure={pressureState} sessions={sessions?.length ?? 0} idleSpec={idleSpec} />
+              ) : (
+                <MemoryDetail memory={memory} history={history} pressure={pressureState} agentsLine={agentsLine} />
+              )
+            }
             actions={<ActionPanel>{commonActions}</ActionPanel>}
           />
         </List.Section>
@@ -441,7 +430,7 @@ export default function Command() {
               key={a.name}
               id={`app-${a.name}`}
               icon={appIcon(a)}
-              title={a.name}
+              title={listTitle(a.name)}
               accessories={[{ text: gb1(a.rssKB / 1024) }]}
               detail={<AppDetail app={a} memory={memory} reapKB={reapAllKB} agentKB={agentKB} />}
               actions={
@@ -590,8 +579,8 @@ function SessionItem({
     <List.Item
       id={s.key}
       icon={toolIcon(s.tool)}
-      title={s.title}
-      keywords={[tool.label, s.name, s.topic, s.repo?.name, s.repo?.branch, s.ticket, s.cwd, s.workspace, s.origin].filter((x): x is string => !!x)}
+      title={listTitle(s.title)}
+      keywords={[s.title, tool.label, s.name, s.topic, s.repo?.name, s.repo?.branch, s.ticket, s.cwd, s.workspace, s.origin].filter((x): x is string => !!x)}
       accessories={[accessory]}
       detail={<List.Item.Detail markdown={markdown} />}
       actions={
