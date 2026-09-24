@@ -48,7 +48,7 @@ test("w idle column", () => {
   assert.equal(parseIdle("09:05"), 32700);
   assert.equal(parseIdle("1day"), 86400);
   assert.equal(parseIdle("16days"), 1382400);
-  const w = parseW("rodrigo console  -        08Sep26 16days -\nrodrigo s005     -        08Sep26 16days claude\nrodrigo s004     -        10:24       14 claude\n");
+  const w = parseW("me console  -        08Sep26 16days -\nme s005     -        08Sep26 16days claude\nme s004     -        10:24       14 claude\n");
   assert.equal(w.get("s005"), 1382400);
   assert.equal(w.get("s004"), 840);
 });
@@ -86,24 +86,24 @@ test("etime", () => {
 });
 
 test("ticket from branch", () => {
-  assert.equal(ticketFromBranch("fix/SEW2-3455_uwsgi-home"), "SEW2-3455");
-  assert.equal(ticketFromBranch("features/how2-748_flag-workflow-slug"), "HOW2-748");
-  assert.equal(ticketFromBranch("features/HOW-517_portal"), "HOW-517");
+  assert.equal(ticketFromBranch("fix/ABC-123_login-redirect"), "ABC-123");
+  assert.equal(ticketFromBranch("feature/web2-48_cache-headers"), "WEB2-48");
+  assert.equal(ticketFromBranch("feature/OPS-517_alerts"), "OPS-517");
   assert.equal(ticketFromBranch("main"), undefined);
   assert.equal(ticketFromBranch(undefined), undefined);
 });
 
 test("workspace", () => {
-  assert.equal(describeWorkspace("/Users/r/orca/workspaces/AI.People21.AppRepo/murex"), "Orca · AI.People21.AppRepo / murex");
-  assert.equal(describeWorkspace("/Users/r/Sewa/.worktrees/aiagent-how2-748-slug/app"), "Worktree · aiagent-how2-748-slug");
-  assert.equal(describeWorkspace("/Users/r/Sewa"), undefined);
+  assert.equal(describeWorkspace("/Users/me/orca/workspaces/acme.web/feature-login"), "Orca · acme.web / feature-login");
+  assert.equal(describeWorkspace("/Users/me/work/.worktrees/api-abc-42-cache/app"), "Worktree · api-abc-42-cache");
+  assert.equal(describeWorkspace("/Users/me/work"), undefined);
 });
 
 test("keep-list globs behave like bash [[ == ]]", () => {
-  assert.ok(globMatch("*/StockTradingTool", "/Users/r/StockTradingTool"));
-  assert.ok(globMatch("*/AI.People21.AppRepo/palolo", "/Users/r/orca/workspaces/AI.People21.AppRepo/palolo"));
-  assert.ok(!globMatch("*/StockTradingTool", "/Users/r/StockTradingTool/sub"));
-  assert.ok(!globMatch("*/AI.People21.AppRepo/palolo", "/Users/r/AIxPeople21xAppRepo/palolo"));
+  assert.ok(globMatch("*/my-project", "/Users/me/my-project"));
+  assert.ok(globMatch("*/acme.web/billing", "/Users/me/orca/workspaces/acme.web/billing"));
+  assert.ok(!globMatch("*/my-project", "/Users/me/my-project/sub"));
+  assert.ok(!globMatch("*/acme.web/billing", "/Users/me/acmexweb/billing"));
 });
 
 test("threshold spec", () => {
@@ -114,13 +114,13 @@ test("threshold spec", () => {
 
 test("claude project folder from a session's cwd", async () => {
   const { projectSlug } = await import("../src/lib/system");
-  assert.equal(projectSlug("/Users/rodrigoalegria/orca/workspaces/AI.People21.AppRepo/murex"), "-Users-rodrigoalegria-orca-workspaces-AI-People21-AppRepo-murex");
-  assert.equal(projectSlug("/Users/rodrigoalegria/Sewa"), "-Users-rodrigoalegria-Sewa");
+  assert.equal(projectSlug("/Users/me/orca/workspaces/acme.web/feature-login"), "-Users-me-orca-workspaces-acme-web-feature-login");
+  assert.equal(projectSlug("/Users/me/work"), "-Users-me-work");
 });
 
 test("row titles fall back and trim", async () => {
   const { displayTitle } = await import("../src/lib/system");
-  assert.equal(displayTitle(undefined, "  first   prompt ", "Sewa"), "first prompt");
+  assert.equal(displayTitle(undefined, "  first   prompt ", "work"), "first prompt");
   assert.equal(displayTitle(undefined, undefined, undefined), "Untitled session");
   assert.equal(displayTitle("x".repeat(80)).length, 60);
 });
@@ -130,9 +130,9 @@ test("a linked worktree reports its main repo's name", async () => {
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { repoIdentity } = await import("../src/lib/system");
-  const root = join(mkdtempSync(join(tmpdir(), "headroom-")), "aiagent-how2-748-slug");
+  const root = join(mkdtempSync(join(tmpdir(), "headroom-")), "api-abc-42-cache");
   mkdirSync(root);
-  writeFileSync(join(root, ".git"), "gitdir: /Users/r/Sewa/AI.People21.AIAgent/.git/worktrees/aiagent-how2-748-slug\n");
-  assert.deepEqual(repoIdentity(root), { name: "AI.People21.AIAgent", worktree: "aiagent-how2-748-slug" });
-  assert.deepEqual(repoIdentity("/Users/r/orca/workspaces/AI.People21.AppRepo/murex"), { name: "AI.People21.AppRepo", worktree: "murex" });
+  writeFileSync(join(root, ".git"), "gitdir: /Users/me/work/acme-api/.git/worktrees/api-abc-42-cache\n");
+  assert.deepEqual(repoIdentity(root), { name: "acme-api", worktree: "api-abc-42-cache" });
+  assert.deepEqual(repoIdentity("/Users/me/orca/workspaces/acme.web/feature-login"), { name: "acme.web", worktree: "feature-login" });
 });

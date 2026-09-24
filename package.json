@@ -1,7 +1,7 @@
 {
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "tinycast-headroom",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "title": "Headroom",
   "description": "Memory pressure, swap and Claude Code sessions, with a safe reap for idle ones",
   "icon": "assets/headroom.svg",
@@ -26,10 +26,11 @@
     {
       "name": "reapPath",
       "type": "textfield",
-      "title": "claude-reap Path",
-      "description": "Path to the claude-reap script",
-      "default": "~/bin/claude-reap",
-      "required": false
+      "title": "Custom claude-reap Path",
+      "description": "Leave empty to use the claude-reap bundled with Headroom",
+      "default": "",
+      "required": false,
+      "placeholder": "~/bin/claude-reap"
     },
     {
       "name": "idleThreshold",
@@ -65,9 +66,10 @@
       "name": "linearWorkspace",
       "type": "textfield",
       "title": "Linear Workspace",
-      "description": "Workspace slug for ticket links: linear.app/<slug>/issue/…",
-      "default": "linkthings",
-      "required": false
+      "description": "Your Linear workspace slug (linear.app/<slug>/…). Leave empty to hide Open in Linear.",
+      "default": "",
+      "required": false,
+      "placeholder": "my-team"
     }
   ],
   "scripts": {

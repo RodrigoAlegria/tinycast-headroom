@@ -1,0 +1,171 @@
+#!/bin/bash
+# claude-reap — reclaim RAM from abandoned Claude Code sessions and dead terminal tabs.
+#
+# Uses terminal IDLE time (like `w`), not process age, so a long-lived session
+# you actually used today is never touched.
+#
+#   claude-reap              # dry run (default): show what would be reaped
+#   claude-reap --apply      # actually reap
+#   claude-reap --idle 12h   # threshold (default 2d). Accepts 30m / 12h / 3d
+#   claude-reap --shells-only | --sessions-only
+#   claude-reap --json       # machine-readable output (dry run or --apply)
+#   claude-reap --only 123,456 --apply   # reap only these PIDs, and only if still reapable
+#   claude-reap --only 123 --ignore-idle --apply   # close one chosen session even if it's not idle
+#
+# Protected always: this script's own process chain, the current terminal,
+# and any session whose working directory matches a line in
+#   ~/.config/claude-reap/keep      (one glob per line, e.g. */my-project)
+
+set -o pipefail
+APPLY=0; IDLE_SPEC="2d"; DO_SESSIONS=1; DO_SHELLS=1; JSON=0; ONLY=""; IGNORE_IDLE=0
+KEEPFILE="$HOME/.config/claude-reap/keep"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply) APPLY=1 ;;
+    --idle) IDLE_SPEC="$2"; shift ;;
+    --shells-only) DO_SESSIONS=0 ;;
+    --sessions-only) DO_SHELLS=0 ;;
+    --json) JSON=1 ;;
+    --only) ONLY=",$(echo "$2" | tr -d ' '),"; shift ;;
+    --ignore-idle) IGNORE_IDLE=1 ;;
+    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# --ignore-idle only ever applies to PIDs named with --only, never to a whole scan.
+if [ "$IGNORE_IDLE" = 1 ] && [ -z "$ONLY" ]; then echo "--ignore-idle needs --only PID[,PID]" >&2; exit 2; fi
+
+say() { [ "$JSON" = 1 ] || echo "$@"; }
+json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+
+# --- threshold to seconds ---
+case "$IDLE_SPEC" in
+  *m) THRESH=$(( ${IDLE_SPEC%m} * 60 )) ;;
+  *h) THRESH=$(( ${IDLE_SPEC%h} * 3600 )) ;;
+  *d) THRESH=$(( ${IDLE_SPEC%d} * 86400 )) ;;
+  *)  THRESH="$IDLE_SPEC" ;;
+esac
+
+# --- our own process chain, plus our tty: never reap these ---
+ANC=""; p=$$
+while [ -n "$p" ] && [ "$p" != "1" ]; do ANC="$ANC $p"; p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' '); done
+MYTTY=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' '); MYTTY=${MYTTY#tty}
+
+# --- keep-list ---
+KEEP=()
+[ -f "$KEEPFILE" ] && while IFS= read -r l; do
+  [ -z "$l" ] || [ "${l:0:1}" = "#" ] || KEEP+=("$l")
+done < "$KEEPFILE"
+
+protected_cwd() {
+  local cwd="$1" pat
+  for pat in ${KEEP+"${KEEP[@]}"}; do
+    # shellcheck disable=SC2053
+    [[ "$cwd" == $pat ]] && return 0
+  done
+  return 1
+}
+
+# --- tty -> idle seconds, parsed from `w` (formats: 53, 2:41, 12:10, 1day, 9days, -) ---
+# bash 3.2 on macOS has no associative arrays, so use a lookup file.
+IDLEMAP=$(mktemp -t claude-reap-idle)
+trap 'rm -f "$IDLEMAP"' EXIT
+w -h 2>/dev/null | awk '{print $2, $5}' | while read -r tty idle; do
+  case "$idle" in
+    -|"")  s=0 ;;
+    *days) s=$(( 10#${idle%days} * 86400 )) ;;
+    *day)  s=$(( 10#${idle%day} * 86400 )) ;;
+    *:*)   s=$(( 10#${idle%%:*} * 3600 + 10#${idle##*:} * 60 )) ;;   # 10# : "09" is not octal
+    *)     s=$(( 10#$idle * 60 )) ;;
+  esac
+  echo "$tty $s"
+done > "$IDLEMAP"
+
+idle_of() { awk -v t="$1" '$1==t {print $2; found=1} END{if(!found) print ""}' "$IDLEMAP"; }
+
+mem() { vm_stat | awk '/Pages free/{f=$3} /occupied by compressor/{c=$5} END{gsub(/\./,"",f); gsub(/\./,"",c); printf "free=%dMB compressor=%dMB", f*16384/1048576, c*16384/1048576}'; }
+swap_used() { sysctl -n vm.swapusage | sed 's/.*used = //; s/ .*//'; }
+mem_json() { # {"freeMB":..,"compressorMB":..,"swapUsedMB":..}
+  local m s; m=$(mem); s=$(swap_used)
+  printf '{"freeMB":%s,"compressorMB":%s,"swapUsedMB":%s}' \
+    "$(echo "$m" | sed 's/free=\([0-9]*\)MB.*/\1/')" "$(echo "$m" | sed 's/.*compressor=\([0-9]*\)MB.*/\1/')" "${s%M}"
+}
+
+BEFORE_JSON=$([ "$JSON" = 1 ] && mem_json)
+say "claude-reap  threshold: idle > $IDLE_SPEC (${THRESH}s)   mode: $([ $APPLY = 1 ] && echo APPLY || echo 'DRY RUN')"
+say "before: $(mem)  swap=$(swap_used)"
+say
+
+VICTIMS=(); RECLAIM=0; VJSON=""; KJSON=""
+
+consider() { # pid label
+  local pid="$1" label="$2" tty cwd idle rss
+  [[ " $ANC " == *" $pid "* ]] && return
+  [ -n "$ONLY" ] && [[ "$ONLY" != *",$pid,"* ]] && return
+  tty=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+  tty=${tty#tty}                                        # ps says ttys018, w says s018
+  [ "$tty" = "$MYTTY" ] && return
+  [ -z "$tty" ] || [ "$tty" = "??" ] && return          # no controlling terminal -> can't judge idleness
+  idle=$(idle_of "$tty")
+  [ -z "$idle" ] && return
+  if [ "$IGNORE_IDLE" = 0 ] && [ "$idle" -le "$THRESH" ]; then return; fi
+  cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  if protected_cwd "$cwd"; then
+    [ "$JSON" = 1 ] || printf "  KEEP   %-7s %-9s idle=%-7s %s  (keep-list)\n" "$pid" "$tty" "$((idle/3600))h" "$cwd"
+    KJSON="$KJSON${KJSON:+,}{\"pid\":$pid,\"tty\":\"$tty\",\"idleSeconds\":$idle,\"kind\":\"$label\",\"cwd\":$(json_str "$cwd")}"
+    return
+  fi
+  rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' '); rss=${rss:-0}
+  [ "$JSON" = 1 ] || printf "  reap   %-7s %-9s idle=%-7s %5dMB  %-8s %s\n" "$pid" "$tty" "$((idle/3600))h" "$((rss/1024))" "$label" "$cwd"
+  VJSON="$VJSON${VJSON:+,}{\"pid\":$pid,\"tty\":\"$tty\",\"idleSeconds\":$idle,\"rssKB\":$rss,\"kind\":\"$label\",\"cwd\":$(json_str "$cwd")}"
+  VICTIMS+=("$pid"); RECLAIM=$((RECLAIM + rss))
+}
+
+if [ "$DO_SESSIONS" = 1 ]; then
+  say "Claude Code sessions:"
+  while read -r pid; do consider "$pid" session; done < <(ps -Ao pid=,command= | grep -E '(^| )[0-9]+ +(claude$|claude )|share/claude/versions' | grep -v grep | awk '{print $1}')
+  say
+fi
+
+if [ "$DO_SHELLS" = 1 ]; then
+  say "Idle login shells (no children):"
+  while read -r pid; do
+    [ "$(pgrep -P "$pid" 2>/dev/null | wc -l | tr -d ' ')" = "0" ] && consider "$pid" shell
+  done < <(ps -Ao pid=,comm= | grep -E ' -?/?(bin/)?zsh$' | awk '{print $1}')
+  say
+fi
+
+n=${#VICTIMS[@]}
+say "$n process(es), $((RECLAIM/1024))MB resident"
+
+emit_json() { # stragglers-json after-json
+  printf '{"mode":"%s","idleThreshold":"%s","thresholdSeconds":%s,"before":%s,"victims":[%s],"kept":[%s],"reclaimKB":%s,"stragglers":[%s],"after":%s}\n' \
+    "$([ $APPLY = 1 ] && echo apply || echo dry-run)" "$IDLE_SPEC" "$THRESH" "$BEFORE_JSON" "$VJSON" "$KJSON" "$RECLAIM" "$1" "${2:-null}"
+}
+
+if [ "$n" = 0 ] || [ "$APPLY" = 0 ]; then
+  if [ "$JSON" = 1 ]; then emit_json "" ""; exit 0; fi
+  [ "$n" = 0 ] && exit 0
+  echo "dry run — re-run with --apply to reap"
+  exit 0
+fi
+
+# interactive shells ignore SIGTERM; HUP is the correct hangup signal, KILL is the fallback
+for p in "${VICTIMS[@]}"; do kill -HUP "$p" 2>/dev/null; done
+sleep 2
+left=()
+for p in "${VICTIMS[@]}"; do kill -0 "$p" 2>/dev/null && left+=("$p"); done
+if [ ${#left[@]} -gt 0 ]; then
+  say "SIGKILL for ${#left[@]} straggler(s): ${left[*]}"
+  for p in "${left[@]}"; do kill -9 "$p" 2>/dev/null; done
+fi
+sleep 1
+if [ "$JSON" = 1 ]; then
+  SJ=""; for p in ${left+"${left[@]}"}; do SJ="$SJ${SJ:+,}$p"; done
+  emit_json "$SJ" "$(mem_json)"
+else
+  echo "after:  $(mem)  swap=$(swap_used)"
+fi

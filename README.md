@@ -11,12 +11,12 @@ A Tinycast extension for Macs that run many Claude Code, Codex and OpenCode sess
 ![Tinycast 0.11.3](https://img.shields.io/badge/Tinycast-0.11.3-0E7C86?style=flat-square)
 ![macOS 26](https://img.shields.io/badge/macOS-26-16202A?style=flat-square&logo=apple)
 ![Raycast format](https://img.shields.io/badge/Raycast-extension%20format-FF6363?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-30%20passing-2E9B5F?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-31%20passing-2E9B5F?style=flat-square)
 ![License MIT](https://img.shields.io/badge/license-MIT-7B8894?style=flat-square)
 
 <img src="docs/images/overview.png" width="860" alt="Headroom in Tinycast: memory pressure, a swap gauge, the memory breakdown and the swap history on the right; agent sessions grouped by state on the left" />
 
-<sub>Screenshot edited for privacy: one session title is blurred.</sub>
+<sub>Screenshots edited for privacy: session titles and conversation text are blurred.</sub>
 
 </div>
 
@@ -24,7 +24,7 @@ A Tinycast extension for Macs that run many Claude Code, Codex and OpenCode sess
 
 ## Why
 
-A 16 GB Mac slows to a crawl long before "RAM used" looks alarming: macOS fills free memory with cache, then compresses, then swaps. Meanwhile agent sessions pile up in terminal tabs for days. Headroom puts both on one screen and answers two questions:
+A Mac with 16 GB or less slows to a crawl long before "RAM used" looks alarming: macOS fills free memory with cache, then compresses, then swaps. Meanwhile agent sessions pile up in terminal tabs for days. Headroom puts both on one screen and answers two questions:
 
 1. **How much headroom is left?** Kernel memory pressure, swap, and what's compressed.
 2. **What can go?** Every Claude Code, Codex and OpenCode session: what it's about, where it works, when you last talked to it. Idle ones can be reaped safely.
@@ -56,8 +56,8 @@ A 16 GB Mac slows to a crawl long before "RAM used" looks alarming: macOS fills 
 <td width="50%" valign="top">
 
 ### Act without leaving
-- **Show Session** jumps to its Orca tab, Terminal or iTerm2 tab, or the app it runs in
-- **Open the ticket in Linear**, copy the resume command, branch or ticket
+- **Show Session** jumps to its Terminal or iTerm2 tab, its Orca tab when Orca is installed, or the app it runs in
+- **Open the ticket in Linear** (set your workspace in preferences), copy the resume command, branch or ticket
 - **Quit a heavy app** from a confirm page, with how much it frees
 - **Edit the keep list** in place (⌘⇧K)
 
@@ -80,7 +80,7 @@ A 16 GB Mac slows to a crawl long before "RAM used" looks alarming: macOS fills 
 
 ## How it finds sessions
 
-Each tool is found by its own evidence, so a session shows up however it was started: a terminal, Orca, or a desktop app.
+Each tool is found by its own evidence, so a session shows up however it was started: a terminal, an editor, or a desktop app.
 
 ```mermaid
 flowchart LR
@@ -121,12 +121,12 @@ It also stays clear of the things that break in Tinycast: no `nettop`, `system_p
 
 ## Safe reaping with claude-reap
 
-Headroom never sends a signal itself. Reaping goes through `claude-reap`, a separate shell script, which keeps the safety rules in one place: it skips its own process chain, the current terminal and anything on the keep list, and decides idleness by **terminal idle time**, not process age.
+Headroom never sends a signal itself. Reaping goes through `claude-reap`, a small shell script bundled with the extension (`assets/claude-reap`), which keeps the safety rules in one place: it skips its own process chain, the current terminal and anything on the keep list, and decides idleness by **terminal idle time**, not process age.
 
 ```sh
 claude-reap --json                                      # dry run
-claude-reap --json --apply --only 44887                 # reap only what you confirmed
-claude-reap --json --apply --only 14207 --ignore-idle   # close one chosen session
+claude-reap --json --apply --only 12345                 # reap only what you confirmed
+claude-reap --json --apply --only 12345 --ignore-idle   # close one chosen session
 ```
 
 `--ignore-idle` is refused without `--only`, so it can never widen a scan.
@@ -152,15 +152,15 @@ npm ci && npm test && npm run build && npm run install-local
 Restart Tinycast after the first install, then search **Headroom**, or open
 `tinycast://extensions/rodrigoalegria/tinycast-headroom/index`. To update, replace the folder and reopen the command.
 
-Reaping needs `claude-reap` at `~/bin/claude-reap` (the path is a preference). It isn't part of this repo; without it, Headroom still shows everything and just can't reap.
+`claude-reap` comes with the extension. It can also run on its own from a terminal: `bash assets/claude-reap --help`.
 
 ### Preferences
 
 | Preference | Default | |
 | --- | --- | --- |
-| claude-reap path | `~/bin/claude-reap` | |
+| Custom claude-reap path | empty | leave empty to use the bundled copy |
 | Idle threshold | 2 days | 12 h · 1 day · 2 days · 3 days · 7 days |
-| Linear workspace | `linkthings` | for `linear.app/<workspace>/issue/…` links |
+| Linear workspace | empty | your workspace slug; Open in Linear stays hidden until it's set |
 
 ## Shortcuts
 
@@ -192,11 +192,11 @@ Headroom logs errors and slow operations to
 ## Development
 
 ```sh
-npm test          # 30 tests: parsers, transcripts, Codex/OpenCode, charts, pressure history
+npm test          # 31 tests: parsers, transcripts, Codex/OpenCode, charts, pressure history, claude-reap
 npm run typecheck
 npm run build     # dist/index.js + manifest
 ```
 
 The code is small on purpose: pure parsers in `src/lib/parse.ts`, `transcript.ts`, `pressure.ts` and `charts.ts` are unit-tested; I/O lives in `system.ts`, `agents.ts` and `focus.ts`.
 
-<div align="center"><sub>MIT · Made for a 16 GB MacBook that deserved better.</sub></div>
+<div align="center"><sub>MIT · Made for Macs that run more agents than they have memory for.</sub></div>

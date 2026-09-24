@@ -147,14 +147,14 @@ function usePoll(task: () => Promise<void>, ms: number, deps: unknown[]) {
 
 export default function Command() {
   const prefs = getPreferenceValues<Preferences>();
-  const reapPath = prefs.reapPath?.trim() || "~/bin/claude-reap";
+  const reapPath = prefs.reapPath?.trim() ?? ""; // empty: the bundled claude-reap
   const idleSpec = prefs.idleThreshold || "2d";
 
   const [memory, setMemory] = useState<Memory>();
   const [history, setHistory] = useState<Point[]>([]);
   const [pressureState, setPressureState] = useState<PressureState>();
   const { push } = useNavigation();
-  const linearWorkspace = prefs.linearWorkspace?.trim() || "linkthings";
+  const linearWorkspace = prefs.linearWorkspace?.trim() ?? ""; // empty: no Linear links
   const [scanned, setScanned] = useState<Session[]>();
   const [scanErrors, setScanErrors] = useState<Partial<Record<Tool, string>>>({});
   const [agentKB, setAgentKB] = useState(0);
@@ -200,7 +200,7 @@ export default function Command() {
         setDryRun(r);
         setError("claude-reap");
       } catch (e) {
-        setError("claude-reap", `${errorText(e)} (path: ${reapPath})`);
+        setError("claude-reap", `${errorText(e)} (path: ${reapPath || "bundled"})`);
       }
     },
     REAP_MS,
@@ -605,7 +605,7 @@ function SessionItem({
               }}
             />
           )}
-          {s.ticket && (
+          {s.ticket && linearWorkspace && (
             <Action.OpenInBrowser title={`Open ${s.ticket} in Linear`} url={linearUrl(linearWorkspace, s.ticket)} shortcut={{ modifiers: ["cmd"], key: "l" }} />
           )}
           {s.resumeCommand && <CopyAction title="Copy Resume Command" content={s.resumeCommand} shortcut={{ modifiers: ["cmd", "shift"], key: "c" }} />}

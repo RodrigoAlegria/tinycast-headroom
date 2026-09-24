@@ -141,7 +141,7 @@ export interface Session {
   tool: Tool;
   key: string; // unique across tools
   sessionId: string;
-  name: string; // the tool's own id-like name: "sewa-15", a thread name, an OpenCode title
+  name: string; // the tool's own id-like name: "myproject-15", a thread name, an OpenCode title
   title: string; // what the row shows: a generated or set title, else the topic, else the folder
   origin: string; // where it runs: "CLI · s005", "Codex Desktop", "OpenCode Desktop"
   cwd: string;
@@ -405,6 +405,18 @@ export interface ReapResult {
 }
 
 /** `ignoreIdle` closes the named PIDs even when they're not idle; claude-reap refuses it without `only`. */
+/** claude-reap ships in the extension's assets; a custom path in the preferences overrides it. */
+export function bundledReapPath(): string {
+  let assets: string | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    assets = (require("@raycast/api") as { environment?: { assetsPath?: string } }).environment?.assetsPath;
+  } catch {
+    assets = undefined;
+  }
+  return join(assets || join(HOME, "Library/Application Support/com.tinycast.app/extensions/tinycast-headroom/assets"), "claude-reap");
+}
+
 export async function reap(reapPath: string, idle: string, apply: boolean, only?: number[], ignoreIdle = false): Promise<ReapResult> {
   // Applying always names the exact PIDs the person confirmed; claude-reap re-checks each is still reapable.
   if (apply && !only?.length) throw new Error("Refusing to reap without an explicit PID list");
@@ -412,6 +424,7 @@ export async function reap(reapPath: string, idle: string, apply: boolean, only?
   if (apply) args.push("--apply");
   if (only) args.push("--only", only.join(","));
   if (ignoreIdle) args.push("--ignore-idle");
-  const out = await run(expandTilde(reapPath), args, 30_000);
+  // Through bash, so the script needs no exec bit and a downloaded copy isn't blocked.
+  const out = await run("/bin/bash", [expandTilde(reapPath || bundledReapPath()), ...args], 30_000);
   return JSON.parse(out) as ReapResult;
 }

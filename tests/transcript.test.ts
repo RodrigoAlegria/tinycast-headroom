@@ -10,7 +10,7 @@ const assistant = (ts: string, content: unknown[] = [], gitBranch = "HEAD") => (
 const edit = (file_path: string) => ({ type: "tool_use", name: "Edit", input: { file_path } });
 
 test("prompt text skips tool results, meta and injected tags", () => {
-  assert.equal(promptText(user("Fix the uwsgi home") as never), "Fix the uwsgi home");
+  assert.equal(promptText(user("Fix the login redirect") as never), "Fix the login redirect");
   assert.equal(promptText(user([{ type: "text", text: "check now" }]) as never), "check now");
   assert.equal(promptText(user([{ type: "tool_result", content: "x" }]) as never), undefined);
   assert.equal(promptText(user("<command-name>/clear</command-name>") as never), undefined);
@@ -21,7 +21,7 @@ test("summary: topic from the head, latest activity from the tail", () => {
   const head = [user("<system-reminder>ctx</system-reminder>"), user("Get this worktree up to date"), assistant("2026-09-24T09:00:00.000Z")];
   const tail = [
     user("fix all you need to fix"),
-    assistant("2026-09-24T10:39:00.000Z", [edit("/Users/r/orca/workspaces/App/murex/backend/settings.py"), edit("/Users/r/Sewa/.worktrees/x/a.py")], "fix/SEW2-3455_uwsgi-home"),
+    assistant("2026-09-24T10:39:00.000Z", [edit("/Users/me/orca/workspaces/app/feature-login/backend/settings.py"), edit("/Users/me/work/.worktrees/x/a.py")], "fix/ABC-123_login-redirect"),
     user([{ type: "tool_result", content: "ok" }]),
     assistant("2026-09-24T10:40:07.548Z"),
   ];
@@ -29,8 +29,8 @@ test("summary: topic from the head, latest activity from the tail", () => {
   assert.equal(s.topic, "Get this worktree up to date");
   assert.equal(s.lastPrompt, "fix all you need to fix");
   assert.equal(s.lastMessageAt, Date.parse("2026-09-24T10:40:07.548Z"));
-  assert.equal(s.gitBranch, "fix/SEW2-3455_uwsgi-home");
-  assert.deepEqual(s.editedDirs, ["/Users/r/orca/workspaces/App/murex/backend", "/Users/r/Sewa/.worktrees/x"]);
+  assert.equal(s.gitBranch, "fix/ABC-123_login-redirect");
+  assert.deepEqual(s.editedDirs, ["/Users/me/orca/workspaces/app/feature-login/backend", "/Users/me/work/.worktrees/x"]);
 });
 
 test("windows drop partial lines at the cut", () => {
@@ -67,22 +67,22 @@ test("edits older than the tail window are found by the backward scan", () => {
   const filler = JSON.stringify(assistant("2026-09-20T00:00:00.000Z", [{ type: "text", text: "y".repeat(2000) }]));
   const lines = [
     JSON.stringify(user("start")),
-    JSON.stringify(assistant("2026-09-21T00:00:00.000Z", [edit("/Users/r/Sewa/.worktrees/aiagent-how2-748-slug/app/x.py")])),
-    JSON.stringify(assistant("2026-09-21T00:01:00.000Z", [edit("/Users/r/.claude/projects/-Users-r-Sewa/memory/note.md")])),
+    JSON.stringify(assistant("2026-09-21T00:00:00.000Z", [edit("/Users/me/work/.worktrees/api-abc-42-cache/app/x.py")])),
+    JSON.stringify(assistant("2026-09-21T00:01:00.000Z", [edit("/Users/me/.claude/projects/-Users-me-work/memory/note.md")])),
   ];
   while (lines.join("\n").length < WINDOW_BYTES * 6) lines.push(filler);
   writeFileSync(path, `${lines.join("\n")}\n`);
-  assert.deepEqual(readTranscript(path)!.editedDirs, ["/Users/r/Sewa/.worktrees/aiagent-how2-748-slug/app"]);
+  assert.deepEqual(readTranscript(path)!.editedDirs, ["/Users/me/work/.worktrees/api-abc-42-cache/app"]);
 });
 
 test("Claude's generated title and last reply come from the tail", () => {
   const tail = [
-    { type: "ai-title", aiTitle: "Client portal" },
-    user("resume the client portal work"),
+    { type: "ai-title", aiTitle: "Billing page" },
+    user("resume the billing page work"),
     assistant("2026-09-24T11:48:00.000Z", [{ type: "text", text: "**Done.** The plan is *updated*." }]),
   ];
   const s = summarize([] as never, tail as never, 10);
-  assert.equal(s.title, "Client portal");
+  assert.equal(s.title, "Billing page");
   assert.equal(s.lastReply, "Done. The plan is updated.");
 });
 

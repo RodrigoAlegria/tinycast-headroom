@@ -39,7 +39,7 @@ export function KeepListForm({ sessions, onSaved }: { sessions: Session[]; onSav
         title="Keep list"
         text={`Sessions whose folder matches a line here are never reaped. One glob per line, # for comments. * matches anything, including /. Saved to ${tilde(KEEP_FILE)}.`}
       />
-      <Form.TextArea id="globs" title="Patterns" value={text} onChange={setText} placeholder={"*/StockTradingTool\n*/AI.People21.AppRepo/palolo"} />
+      <Form.TextArea id="globs" title="Patterns" value={text} onChange={setText} placeholder={"*/my-project\n*/clients/*/archive"} />
       <Form.Description
         title="Protects now"
         text={protectedNow.length ? protectedNow.map((s) => `${s.title} (${tilde(s.cwd)})`).join("\n") : "No running Claude session matches these patterns."}

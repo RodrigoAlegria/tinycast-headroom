@@ -141,7 +141,7 @@ export function groupApps(procs: Proc[]): AppGroup[] {
   return [...groups.values()].sort((a, b) => b.rssKB - a.rssKB);
 }
 
-/** Ticket id from a branch name: "fix/SEW2-3455_uwsgi-home" → "SEW2-3455". */
+/** Ticket id from a branch name: "fix/ABC-123_login-redirect" → "ABC-123". */
 export function ticketFromBranch(branch: string | undefined): string | undefined {
   const m = branch?.match(/(?:^|[/_-])([A-Za-z]{2,6}\d?-\d{1,6})(?=$|[_/-])/);
   return m ? m[1].toUpperCase() : undefined;

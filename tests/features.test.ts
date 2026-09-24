@@ -42,3 +42,15 @@ test("compare bars escape labels and never draw negative widths", () => {
   assert.match(svg, /A &amp; &lt;B>/);
   assert.ok(!/width="-/.test(svg));
 });
+
+test("the bundled claude-reap runs through bash and refuses --ignore-idle without --only", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { join } = await import("node:path");
+  const script = join(__dirname, "..", "assets", "claude-reap");
+  const refused = spawnSync("/bin/bash", [script, "--ignore-idle", "--json"], { encoding: "utf8" });
+  assert.equal(refused.status, 2);
+  assert.match(refused.stderr, /needs --only/);
+  const help = spawnSync("/bin/bash", [script, "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /--ignore-idle/);
+});

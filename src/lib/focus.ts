@@ -39,12 +39,19 @@ const stripGlyph = (t: string) => t.replace(/^[^\p{L}\p{N}]+/u, "").trim().toLow
 
 /**
  * Orca doesn't report a terminal's pid or tty, but it titles each tab with the agent's own
- * session title ("✳ Client portal"). Match on that, preferring the same agent.
+ * session title ("✳ Fix login redirect"). Match on that, preferring the same agent.
  */
+/** Orca's CLI, wherever it's installed; undefined when Orca isn't there. */
+function orcaCli(): string | undefined {
+  return ["/usr/local/bin/orca", "/opt/homebrew/bin/orca", join(HOME, ".local/bin/orca")].find((p) => existsSync(p));
+}
+
 async function switchOrcaTab(s: Session): Promise<boolean> {
+  const orca = orcaCli();
+  if (!orca) return false;
   let list: OrcaTerminal[] = [];
   try {
-    const out = await run("/usr/local/bin/orca", ["terminal", "list", "--json"], 5000);
+    const out = await run(orca, ["terminal", "list", "--json"], 5000);
     list = (JSON.parse(out) as { result?: { terminals?: OrcaTerminal[] } }).result?.terminals ?? [];
   } catch (e) {
     log("index", "orca terminal list failed", e);
@@ -55,7 +62,7 @@ async function switchOrcaTab(s: Session): Promise<boolean> {
   const candidates = list.filter((t) => t.title && stripGlyph(t.title) === want);
   const match = candidates.find((t) => t.agentIdentity === agent) ?? candidates[0];
   if (!match) return false;
-  await run("/usr/local/bin/orca", ["terminal", "switch", "--terminal", match.handle], 5000);
+  await run(orca, ["terminal", "switch", "--terminal", match.handle], 5000);
   return true;
 }
 
